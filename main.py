@@ -4,6 +4,36 @@ import random
 import numpy as np
 from moviepy import CompositeVideoClip, ImageClip, VideoFileClip
 from moviepy.audio.AudioClip import AudioClip
+from proglog import TqdmProgressBarLogger
+
+
+class VideoProgressLogger(TqdmProgressBarLogger):
+    """
+    Keeps moviepy's console progress bars and also reports
+    frame rendering progress of the current video via a callback.
+    """
+
+    def __init__(self, on_video_progress):
+        super().__init__()
+        self.on_video_progress = on_video_progress
+        self.last_percent = None
+
+    def bars_callback(self, bar, attr, value, old_value=None):
+        super().bars_callback(bar, attr, value, old_value)
+
+        # "frame_index" is the bar moviepy uses while writing video frames
+        if bar != "frame_index" or attr != "index":
+            return
+
+        total = self.bars[bar]["total"]
+        if not total:
+            return
+
+        # Report only when the whole percent changes to avoid flooding the caller
+        percent = min(100, int((value + 1) * 100 / total))
+        if percent != self.last_percent:
+            self.last_percent = percent
+            self.on_video_progress(percent)
 
 
 def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
@@ -64,7 +94,7 @@ def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
 
 
 
-def add_watermark(input_video_path, output_video_path, watermark_image_path):
+def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar"):
     # Load the video
     video = VideoFileClip(input_video_path)
 
@@ -120,11 +150,12 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path):
         codec="libx264",
         audio_codec="aac",
         # Create the temporary audio file next to the output video
-        temp_audiofile_path=os.path.dirname(output_video_path)
+        temp_audiofile_path=os.path.dirname(output_video_path),
+        logger=logger
     )
 
 
-def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None):
+def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -141,9 +172,16 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
         input_video_path = os.path.join(raw_videos_path, video_file)
         output_video_path = os.path.join(output_folder_path, f"watermarked_{video_file}")
 
+        # Use a logger that reports per-video progress, if requested
+        logger = VideoProgressLogger(on_video_progress) if on_video_progress is not None else "bar"
+
         print(f"Processing video: {video_file}")
-        add_watermark(input_video_path, output_video_path, watermark_image_path)
+        add_watermark(input_video_path, output_video_path, watermark_image_path, logger=logger)
         print(f"Video saved: {output_video_path}")
+
+    # Report that all videos have been processed
+    if on_progress is not None:
+        on_progress(len(video_files), len(video_files), None)
 
 
 if __name__ == "__main__":

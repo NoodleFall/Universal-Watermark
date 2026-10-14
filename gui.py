@@ -16,6 +16,8 @@ class WatermarkApp:
         self.output_folder_var = tk.StringVar(value="watermarked_videos")
         self.watermark_image_var = tk.StringVar(value="watermark.png")
         self.status_var = tk.StringVar(value="Ready")
+        self.video_percent_var = tk.StringVar(value="0%")
+        self.counts_var = tk.StringVar(value="Processed: 0 / 0")
 
         frame = ttk.Frame(root, padding=10)
         frame.grid(sticky="nsew")
@@ -29,10 +31,19 @@ class WatermarkApp:
         self.run_button = ttk.Button(frame, text="Run", command=self._run)
         self.run_button.grid(row=3, column=0, columnspan=3, pady=(10, 5))
 
-        self.progress = ttk.Progressbar(frame, mode="determinate")
-        self.progress.grid(row=4, column=0, columnspan=3, sticky="ew")
+        # Progress of the video currently being rendered
+        ttk.Label(frame, text="Current video:").grid(row=4, column=0, sticky="w", pady=2)
+        self.video_progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
+        self.video_progress.grid(row=4, column=1, sticky="ew", padx=5, pady=2)
+        ttk.Label(frame, textvariable=self.video_percent_var).grid(row=4, column=2, sticky="w", pady=2)
 
-        ttk.Label(frame, textvariable=self.status_var).grid(row=5, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        # Progress over all videos
+        ttk.Label(frame, text="Overall progress:").grid(row=5, column=0, sticky="w", pady=2)
+        self.progress = ttk.Progressbar(frame, mode="determinate")
+        self.progress.grid(row=5, column=1, sticky="ew", padx=5, pady=2)
+        ttk.Label(frame, textvariable=self.counts_var).grid(row=5, column=2, sticky="w", pady=2)
+
+        ttk.Label(frame, textvariable=self.status_var).grid(row=6, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
     def _add_path_row(self, frame, row, label, variable, browse_command):
         ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=2)
@@ -72,6 +83,9 @@ class WatermarkApp:
 
         self.run_button.config(state="disabled")
         self.progress["value"] = 0
+        self.video_progress["value"] = 0
+        self.video_percent_var.set("0%")
+        self.counts_var.set("Processed: 0 / 0")
         self.status_var.set("Starting…")
 
         # Render in a background thread so the window doesn't freeze
@@ -84,7 +98,13 @@ class WatermarkApp:
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path):
         try:
-            main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=self._on_progress)
+            main(
+                raw_videos_path,
+                output_folder_path,
+                watermark_image_path,
+                on_progress=self._on_progress,
+                on_video_progress=self._on_video_progress
+            )
         except Exception as e:
             self.root.after(0, self._on_error, e)
         else:
@@ -94,13 +114,26 @@ class WatermarkApp:
         # Called from the worker thread, so hand the UI update to the main thread
         self.root.after(0, self._update_progress, index, total, video_file)
 
-    def _update_progress(self, index, total, video_file):
-        self.progress["maximum"] = total
-        self.progress["value"] = index
-        self.status_var.set(f"Processing {index + 1}/{total}: {video_file}")
+    def _update_progress(self, processed, total, video_file):
+        # Avoid a zero maximum when the folder has no videos
+        self.progress["maximum"] = max(total, 1)
+        self.progress["value"] = processed
+        self.counts_var.set(f"Processed: {processed} / {total}")
+
+        if video_file is not None:
+            self.video_progress["value"] = 0
+            self.video_percent_var.set("0%")
+            self.status_var.set(f"Processing video {processed + 1} of {total}: {video_file}")
+
+    def _on_video_progress(self, percent):
+        # Called from the worker thread, so hand the UI update to the main thread
+        self.root.after(0, self._update_video_progress, percent)
+
+    def _update_video_progress(self, percent):
+        self.video_progress["value"] = percent
+        self.video_percent_var.set(f"{percent}%")
 
     def _on_done(self):
-        self.progress["value"] = self.progress["maximum"]
         self.status_var.set("Done")
         self.run_button.config(state="normal")
         messagebox.showinfo("Done", "All videos have been processed.")
