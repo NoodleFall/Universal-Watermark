@@ -1,21 +1,63 @@
 import os
 import random
+import threading
 
 import numpy as np
 from moviepy import CompositeVideoClip, ImageClip, VideoFileClip
+from moviepy.Clip import Clip
 from moviepy.audio.AudioClip import AudioClip
 from proglog import TqdmProgressBarLogger
 
 
-class VideoProgressLogger(TqdmProgressBarLogger):
+class RenderCancelled(Exception):
+    """Raised when the user stops rendering."""
+
+
+class RenderControl:
     """
-    Keeps moviepy's console progress bars and also reports
-    frame rendering progress of the current video via a callback.
+    Lets another thread (e.g. the GUI) pause, resume and stop rendering.
     """
 
-    def __init__(self, on_video_progress):
+    def __init__(self):
+        self._resumed = threading.Event()
+        self._resumed.set()
+        self._stopped = False
+
+    def pause(self):
+        self._resumed.clear()
+
+    def resume(self):
+        self._resumed.set()
+
+    def stop(self):
+        self._stopped = True
+        # Wake up the render thread if it is paused
+        self._resumed.set()
+
+    @property
+    def stopped(self):
+        return self._stopped
+
+    def wait_if_paused(self):
+        self._resumed.wait()
+
+    def check(self):
+        # Block while paused, then cancel if stop was requested
+        self.wait_if_paused()
+        if self._stopped:
+            raise RenderCancelled()
+
+
+class VideoProgressLogger(TqdmProgressBarLogger):
+    """
+    Keeps moviepy's console progress bars, reports frame rendering
+    progress of the current video via a callback and handles pause/stop.
+    """
+
+    def __init__(self, on_video_progress=None, control=None):
         super().__init__()
         self.on_video_progress = on_video_progress
+        self.control = control
         self.last_percent = None
 
     def bars_callback(self, bar, attr, value, old_value=None):
@@ -23,10 +65,17 @@ class VideoProgressLogger(TqdmProgressBarLogger):
 
         # "frame_index" is the bar moviepy uses while writing video frames
         if bar != "frame_index" or attr != "index":
+            # Audio is being written: allow pausing, but don't cancel here,
+            # because moviepy doesn't close its audio writer on errors
+            if self.control is not None:
+                self.control.wait_if_paused()
             return
 
+        if self.control is not None:
+            self.control.check()
+
         total = self.bars[bar]["total"]
-        if not total:
+        if not total or self.on_video_progress is None:
             return
 
         # Report only when the whole percent changes to avoid flooding the caller
@@ -145,17 +194,37 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
         final_video = final_video.with_audio(normalized_audio)
 
     # Save the video with the watermark and normalized audio
-    final_video.write_videofile(
-        output_video_path,
-        codec="libx264",
-        audio_codec="aac",
-        # Create the temporary audio file next to the output video
-        temp_audiofile_path=os.path.dirname(output_video_path),
-        logger=logger
-    )
+    try:
+        final_video.write_videofile(
+            output_video_path,
+            codec="libx264",
+            audio_codec="aac",
+            # Create the temporary audio file next to the output video
+            temp_audiofile_path=os.path.dirname(output_video_path),
+            logger=logger
+        )
+    except RenderCancelled:
+        remove_partial_files(output_video_path)
+        raise
+    finally:
+        # Stop the ffmpeg process that reads the source video
+        video.close()
 
 
-def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None):
+def remove_partial_files(output_video_path):
+    # Remove the unfinished output video
+    if os.path.exists(output_video_path):
+        os.remove(output_video_path)
+
+    # Remove moviepy's temporary audio file, named "<video name>TEMP_MPY_..."
+    output_dir = os.path.dirname(output_video_path) or "."
+    name = os.path.splitext(os.path.basename(output_video_path))[0]
+    for file_name in os.listdir(output_dir):
+        if file_name.startswith(name + Clip._TEMP_FILES_PREFIX):
+            os.remove(os.path.join(output_dir, file_name))
+
+
+def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -165,6 +234,10 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
 
     # Process each video
     for i, video_file in enumerate(video_files):
+        # Wait here if paused and stop if requested before starting the next video
+        if control is not None:
+            control.check()
+
         # Report progress to the caller (e.g. the GUI)
         if on_progress is not None:
             on_progress(i, len(video_files), video_file)
@@ -172,8 +245,11 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
         input_video_path = os.path.join(raw_videos_path, video_file)
         output_video_path = os.path.join(output_folder_path, f"watermarked_{video_file}")
 
-        # Use a logger that reports per-video progress, if requested
-        logger = VideoProgressLogger(on_video_progress) if on_video_progress is not None else "bar"
+        # Use a logger that reports per-video progress and handles pause/stop, if requested
+        if on_video_progress is not None or control is not None:
+            logger = VideoProgressLogger(on_video_progress, control)
+        else:
+            logger = "bar"
 
         print(f"Processing video: {video_file}")
         add_watermark(input_video_path, output_video_path, watermark_image_path, logger=logger)

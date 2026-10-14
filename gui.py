@@ -5,7 +5,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from main import main
+from main import RenderCancelled, RenderControl, main
 
 
 def get_settings_path():
@@ -63,8 +63,22 @@ class WatermarkApp:
         self._add_path_row(frame, 1, "Output folder:", self.output_folder_var, self._browse_output_folder)
         self._add_path_row(frame, 2, "Watermark image:", self.watermark_image_var, self._browse_watermark)
 
-        self.run_button = ctk.CTkButton(frame, text="Run", command=self._run)
-        self.run_button.grid(row=3, column=0, columnspan=3, pady=(10, 5))
+        buttons = ctk.CTkFrame(frame, fg_color="transparent")
+        buttons.grid(row=3, column=0, columnspan=3, pady=(10, 5))
+        self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
+        self.run_button.grid(row=0, column=0, padx=5)
+        self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
+        self.pause_button.grid(row=0, column=1, padx=5)
+        self.stop_button = ctk.CTkButton(buttons, text="Stop", width=100, state="disabled", command=self._stop)
+        self.stop_button.grid(row=0, column=2, padx=5)
+
+        # Pause/stop control of the current rendering, None when idle
+        self.control = None
+        self.paused = False
+
+        # Closing the window while rendering works like Stop
+        self.closing = False
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
         ctk.CTkLabel(frame, text="Current video:").grid(row=4, column=0, sticky="w", padx=10, pady=2)
@@ -134,7 +148,12 @@ class WatermarkApp:
             messagebox.showerror("Error", f"Watermark image not found:\n{watermark_image_path}")
             return
 
+        self.control = RenderControl()
+        self.paused = False
+        self.processing_status = "Starting…"
         self.run_button.configure(state="disabled")
+        self.pause_button.configure(state="normal", text="Pause")
+        self.stop_button.configure(state="normal")
         self._set_bar(self.progress, 0)
         self._set_bar(self.video_progress, 0)
         self.video_percent_var.set("0%")
@@ -144,20 +163,66 @@ class WatermarkApp:
         # Render in a background thread so the window doesn't freeze
         thread = threading.Thread(
             target=self._process,
-            args=(raw_videos_path, output_folder_path, watermark_image_path),
+            args=(raw_videos_path, output_folder_path, watermark_image_path, self.control),
             daemon=True
         )
         thread.start()
 
-    def _process(self, raw_videos_path, output_folder_path, watermark_image_path):
+    def _toggle_pause(self):
+        if self.paused:
+            self.control.resume()
+            self.paused = False
+            self.pause_button.configure(text="Pause")
+            self.status_var.set(self.processing_status)
+        else:
+            self.control.pause()
+            self.paused = True
+            self.pause_button.configure(text="Resume")
+            self.status_var.set("Paused")
+
+    def _stop(self):
+        self.control.stop()
+        self.pause_button.configure(state="disabled")
+        self.stop_button.configure(state="disabled")
+        self.status_var.set("Stopping…")
+
+    def _on_close(self):
+        if self.control is None:
+            self.root.destroy()
+            return
+
+        # Stop rendering and close the window once the partial files are removed
+        self.closing = True
+        if not self.control.stopped:
+            self._stop()
+
+    def _close_if_requested(self):
+        # Called when rendering ends; returns True if the window was closed
+        if self.closing:
+            self.root.destroy()
+            return True
+        return False
+
+    def _finish(self):
+        # Return the buttons to the idle state
+        self.control = None
+        self.paused = False
+        self.run_button.configure(state="normal")
+        self.pause_button.configure(state="disabled", text="Pause")
+        self.stop_button.configure(state="disabled")
+
+    def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control):
         try:
             main(
                 raw_videos_path,
                 output_folder_path,
                 watermark_image_path,
                 on_progress=self._on_progress,
-                on_video_progress=self._on_video_progress
+                on_video_progress=self._on_video_progress,
+                control=control
             )
+        except RenderCancelled:
+            self.root.after(0, self._on_cancelled)
         except Exception as e:
             self.root.after(0, self._on_error, e)
         else:
@@ -175,7 +240,9 @@ class WatermarkApp:
         if video_file is not None:
             self._set_bar(self.video_progress, 0)
             self.video_percent_var.set("0%")
-            self.status_var.set(f"Processing video {processed + 1} of {total}: {video_file}")
+            # Remember the status to restore it after resuming from pause
+            self.processing_status = f"Processing video {processed + 1} of {total}: {video_file}"
+            self.status_var.set(self.processing_status)
 
     def _on_video_progress(self, percent):
         # Called from the worker thread, so hand the UI update to the main thread
@@ -186,13 +253,26 @@ class WatermarkApp:
         self.video_percent_var.set(f"{percent}%")
 
     def _on_done(self):
+        if self._close_if_requested():
+            return
         self.status_var.set("Done")
-        self.run_button.configure(state="normal")
+        self._finish()
         messagebox.showinfo("Done", "All videos have been processed.")
 
+    def _on_cancelled(self):
+        if self._close_if_requested():
+            return
+        self.status_var.set("Stopped")
+        self._set_bar(self.video_progress, 0)
+        self.video_percent_var.set("0%")
+        self._finish()
+
     def _on_error(self, error):
+        if self._close_if_requested():
+            print(f"Error: {error}")
+            return
         self.status_var.set("Error")
-        self.run_button.configure(state="normal")
+        self._finish()
         messagebox.showerror("Error", str(error))
 
 
