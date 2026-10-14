@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 from tkinter import filedialog, messagebox
@@ -7,15 +8,48 @@ import customtkinter as ctk
 from main import main
 
 
+def get_settings_path():
+    # %APPDATA% on Windows, ~/.config (or $XDG_CONFIG_HOME) elsewhere
+    config_dir = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(config_dir, "watermark", "settings.json")
+
+
+def load_settings():
+    try:
+        with open(get_settings_path(), encoding="utf-8") as f:
+            settings = json.load(f)
+    except (OSError, ValueError):
+        # No saved settings yet, or the file is broken
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def save_settings(settings):
+    settings_path = get_settings_path()
+    try:
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"Failed to save settings: {e}")
+
+
 class WatermarkApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Watermark")
         self.root.resizable(True, False)
 
-        self.raw_videos_var = ctk.StringVar(value="raw_videos")
-        self.output_folder_var = ctk.StringVar(value="watermarked_videos")
-        self.watermark_image_var = ctk.StringVar(value="watermark.png")
+        # Restore the paths from the previous run, falling back to defaults
+        settings = load_settings()
+        self.raw_videos_var = ctk.StringVar(value=settings.get("raw_videos_path", "raw_videos"))
+        self.output_folder_var = ctk.StringVar(value=settings.get("output_folder_path", "watermarked_videos"))
+        self.watermark_image_var = ctk.StringVar(value=settings.get("watermark_image_path", "watermark.png"))
+
+        # Save the paths whenever any of them changes
+        for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var):
+            var.trace_add("write", self._save_paths)
+
         self.status_var = ctk.StringVar(value="Ready")
         self.video_percent_var = ctk.StringVar(value="0%")
         self.counts_var = ctk.StringVar(value="Processed: 0 / 0")
@@ -47,6 +81,13 @@ class WatermarkApp:
         ctk.CTkLabel(frame, textvariable=self.counts_var).grid(row=5, column=2, sticky="w", padx=10, pady=2)
 
         ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+
+    def _save_paths(self, *args):
+        save_settings({
+            "raw_videos_path": self.raw_videos_var.get(),
+            "output_folder_path": self.output_folder_var.get(),
+            "watermark_image_path": self.watermark_image_var.get(),
+        })
 
     def _set_bar(self, bar, value):
         # customtkinter still draws a small rounded stub at 0,
