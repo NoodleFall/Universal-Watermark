@@ -124,7 +124,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path):
     )
 
 
-def main(raw_videos_path, output_folder_path, watermark_image_path):
+def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -133,7 +133,11 @@ def main(raw_videos_path, output_folder_path, watermark_image_path):
     video_files = [f for f in os.listdir(raw_videos_path) if f.endswith(('.mp4', '.avi', '.mov', '.mkv', '.MP4'))]
 
     # Process each video
-    for video_file in video_files:
+    for i, video_file in enumerate(video_files):
+        # Report progress to the caller (e.g. the GUI)
+        if on_progress is not None:
+            on_progress(i, len(video_files), video_file)
+
         input_video_path = os.path.join(raw_videos_path, video_file)
         output_video_path = os.path.join(output_folder_path, f"watermarked_{video_file}")
 
