@@ -34,21 +34,40 @@ def save_settings(settings):
         print(f"Failed to save settings: {e}")
 
 
+def is_percent_input(value):
+    # Empty is allowed while typing; otherwise a whole number from 1 to 100
+    if value == "":
+        return True
+    return value.isascii() and value.isdigit() and not value.startswith("0") and int(value) <= 100
+
+
+def valid_percent_or(value, default):
+    # Use a saved percentage only if it is still a valid whole number
+    value = str(value) if value is not None else ""
+    return value if value != "" and is_percent_input(value) else default
+
+
 class WatermarkApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Watermark")
         self.root.resizable(True, False)
 
-        # Restore the paths from the previous run, falling back to defaults
+        # Restore the settings from the previous run, falling back to defaults
         settings = load_settings()
         self.raw_videos_var = ctk.StringVar(value=settings.get("raw_videos_path", "raw_videos"))
         self.output_folder_var = ctk.StringVar(value=settings.get("output_folder_path", "watermarked_videos"))
         self.watermark_image_var = ctk.StringVar(value=settings.get("watermark_image_path", "watermark.png"))
+        self.width_var = ctk.StringVar(value=valid_percent_or(settings.get("width_percent"), "50"))
+        self.height_var = ctk.StringVar(value=valid_percent_or(settings.get("height_percent"), "20"))
+        # Shown in the height field while the aspect ratio is kept
+        self.auto_height_var = ctk.StringVar(value="auto")
+        self.keep_ratio_var = ctk.BooleanVar(value=bool(settings.get("keep_aspect_ratio", True)))
 
-        # Save the paths whenever any of them changes
-        for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var):
-            var.trace_add("write", self._save_paths)
+        # Save the settings whenever any of them changes
+        for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
+                    self.width_var, self.height_var, self.keep_ratio_var):
+            var.trace_add("write", self._save_settings)
 
         self.status_var = ctk.StringVar(value="Ready")
         self.video_percent_var = ctk.StringVar(value="0%")
@@ -63,8 +82,45 @@ class WatermarkApp:
         self._add_path_row(frame, 1, "Output folder:", self.output_folder_var, self._browse_output_folder)
         self._add_path_row(frame, 2, "Watermark image:", self.watermark_image_var, self._browse_watermark)
 
+        # Watermark width as a percentage of the video width
+        ctk.CTkLabel(frame, text="Watermark width:").grid(row=3, column=0, sticky="w", padx=10, pady=2)
+        width_row = ctk.CTkFrame(frame, fg_color="transparent")
+        width_row.grid(row=3, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        # Allow typing only whole numbers from 1 to 100
+        validate_percent = (root.register(is_percent_input), "%P")
+        ctk.CTkEntry(
+            width_row,
+            textvariable=self.width_var,
+            width=70,
+            validate="key",
+            validatecommand=validate_percent
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(width_row, text="% of video width").grid(row=0, column=1, padx=(5, 0))
+
+        # Watermark height: derived from the width, or a custom percentage of the video height
+        ctk.CTkLabel(frame, text="Watermark height:").grid(row=4, column=0, sticky="w", padx=10, pady=2)
+        height_row = ctk.CTkFrame(frame, fg_color="transparent")
+        height_row.grid(row=4, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.height_entry = ctk.CTkEntry(
+            height_row,
+            textvariable=self.height_var,
+            width=70,
+            validate="key",
+            validatecommand=validate_percent
+        )
+        self.height_entry.grid(row=0, column=0)
+        self.height_entry_text_color = self.height_entry.cget("text_color")
+        ctk.CTkLabel(height_row, text="% of video height").grid(row=0, column=1, padx=(5, 0))
+        ctk.CTkCheckBox(
+            height_row,
+            text="Keep aspect ratio",
+            variable=self.keep_ratio_var,
+            command=self._update_height_entry
+        ).grid(row=0, column=2, padx=(20, 0))
+        self._update_height_entry()
+
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=3, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=5, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -81,27 +137,58 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=4, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=6, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=4, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=4, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=6, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=6, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=5, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=5, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.counts_var).grid(row=5, column=2, sticky="w", padx=10, pady=2)
+        self.progress.grid(row=7, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.counts_var).grid(row=7, column=2, sticky="w", padx=10, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
-    def _save_paths(self, *args):
+    def _save_settings(self, *args):
         save_settings({
             "raw_videos_path": self.raw_videos_var.get(),
             "output_folder_path": self.output_folder_var.get(),
             "watermark_image_path": self.watermark_image_var.get(),
+            "width_percent": self.width_var.get(),
+            "height_percent": self.height_var.get(),
+            "keep_aspect_ratio": self.keep_ratio_var.get(),
         })
+
+    def _update_height_entry(self):
+        # The custom height is only used when the aspect ratio is not kept.
+        # A disabled CTkEntry looks the same as an enabled one,
+        # so also show "auto" in gray instead of the custom value.
+        # Switching the variable runs the input validation on "auto", and Tk turns
+        # validation off for good when it fails, so pause it during the switch
+        self.height_entry.configure(validate="none")
+        if self.keep_ratio_var.get():
+            self.height_entry.configure(
+                state="disabled",
+                textvariable=self.auto_height_var,
+                text_color=("gray55", "gray50")
+            )
+        else:
+            self.height_entry.configure(
+                state="normal",
+                textvariable=self.height_var,
+                text_color=self.height_entry_text_color
+            )
+        self.height_entry.configure(validate="key")
+
+    def _parse_percent(self, value, name):
+        # Returns the percentage as a number, or None after showing an error
+        if not is_percent_input(value) or value == "":
+            messagebox.showerror("Error", f"{name} must be a whole number from 1 to 100.")
+            return None
+        return int(value)
 
     def _set_bar(self, bar, value):
         # customtkinter still draws a small rounded stub at 0,
@@ -148,6 +235,17 @@ class WatermarkApp:
             messagebox.showerror("Error", f"Watermark image not found:\n{watermark_image_path}")
             return
 
+        # Validate the watermark size
+        width_percent = self._parse_percent(self.width_var.get(), "Watermark width")
+        if width_percent is None:
+            return
+        if self.keep_ratio_var.get():
+            height_percent = None
+        else:
+            height_percent = self._parse_percent(self.height_var.get(), "Watermark height")
+            if height_percent is None:
+                return
+
         self.control = RenderControl()
         self.paused = False
         self.processing_status = "Starting…"
@@ -163,7 +261,7 @@ class WatermarkApp:
         # Render in a background thread so the window doesn't freeze
         thread = threading.Thread(
             target=self._process,
-            args=(raw_videos_path, output_folder_path, watermark_image_path, self.control),
+            args=(raw_videos_path, output_folder_path, watermark_image_path, self.control, width_percent, height_percent),
             daemon=True
         )
         thread.start()
@@ -211,7 +309,7 @@ class WatermarkApp:
         self.pause_button.configure(state="disabled", text="Pause")
         self.stop_button.configure(state="disabled")
 
-    def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control):
+    def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control, width_percent, height_percent):
         try:
             main(
                 raw_videos_path,
@@ -219,7 +317,9 @@ class WatermarkApp:
                 watermark_image_path,
                 on_progress=self._on_progress,
                 on_video_progress=self._on_video_progress,
-                control=control
+                control=control,
+                width_percent=width_percent,
+                height_percent=height_percent
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)

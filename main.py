@@ -143,7 +143,13 @@ def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
 
 
 
-def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar"):
+def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar",
+                  width_percent=50, height_percent=None):
+    """
+    width_percent: watermark width as a percentage of the video width.
+    height_percent: watermark height as a percentage of the video height,
+        or None to derive it from the width, keeping the image aspect ratio.
+    """
     # Load the video
     video = VideoFileClip(input_video_path)
 
@@ -156,10 +162,17 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     # Set the watermark duration to match the video duration
     watermark = watermark.with_duration(video.duration)
 
-    # Set the watermark size: 50% of the video width
-    watermark_width = int(video.size[0] * 0.50)
-    watermark_height = int(watermark.size[1] * (watermark_width / watermark.size[0]))
-    watermark = watermark.resized(width=watermark_width, height=watermark_height)
+    # Set the watermark width as a percentage of the video width
+    watermark_width = min(max(1, int(video.size[0] * width_percent / 100)), video.size[0])
+    if height_percent is None:
+        # Keep the image aspect ratio
+        watermark_height = int(watermark.size[1] * (watermark_width / watermark.size[0]))
+    else:
+        watermark_height = int(video.size[1] * height_percent / 100)
+    # Don't let the watermark be empty or larger than the video
+    watermark_height = min(max(1, watermark_height), video.size[1])
+    # Pass both sides explicitly: with width= and height= moviepy ignores the width
+    watermark = watermark.resized(new_size=(watermark_width, watermark_height))
 
     # Set the watermark opacity (33%)
     watermark = watermark.with_opacity(0.33)
@@ -224,7 +237,8 @@ def remove_partial_files(output_video_path):
             os.remove(os.path.join(output_dir, file_name))
 
 
-def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None):
+def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
+         width_percent=50, height_percent=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -252,7 +266,14 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             logger = "bar"
 
         print(f"Processing video: {video_file}")
-        add_watermark(input_video_path, output_video_path, watermark_image_path, logger=logger)
+        add_watermark(
+            input_video_path,
+            output_video_path,
+            watermark_image_path,
+            logger=logger,
+            width_percent=width_percent,
+            height_percent=height_percent
+        )
         print(f"Video saved: {output_video_path}")
 
     # Report that all videos have been processed
