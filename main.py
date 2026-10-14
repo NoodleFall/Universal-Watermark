@@ -1,0 +1,156 @@
+import os
+import random
+
+import numpy as np
+from moviepy import CompositeVideoClip, ImageClip, VideoFileClip
+from moviepy.audio.AudioClip import AudioClip
+
+
+def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
+    """
+    Approximate normalization to a target loudness level in LUFS.
+    Done via RMS (dBFS ≈ LUFS in most cases).
+
+    target_lufs: target level, e.g. -14.0 (for streaming platforms).
+    """
+    if audio_clip is None:
+        return None
+
+    try:
+        snd = audio_clip.to_soundarray(fps=fps)  # [samples, channels] or [samples]
+    except Exception as e:
+        print(f"Failed to read audio for normalization: {e}")
+        return audio_clip
+
+    if snd.size == 0:
+        return audio_clip
+
+    # Downmix to mono for loudness calculation
+    if snd.ndim == 2:
+        snd_mono = snd.mean(axis=1)
+    else:
+        snd_mono = snd
+
+    # RMS
+    rms = float(np.sqrt(np.mean(snd_mono ** 2)))
+    if rms == 0:
+        print("[Normalization] Complete silence, skipping")
+        return audio_clip
+
+    # dBFS ≈ LUFS
+    current_lufs = 20 * np.log10(rms + 1e-12)
+
+    gain_db = target_lufs - current_lufs
+    # Convert dB → factor
+    factor = 10 ** (gain_db / 20.0)
+
+    # Limit boost/cut to reasonable bounds to avoid extreme results
+    factor = float(np.clip(factor, 0.1, 10.0))
+
+    print(f"[LUFS normalization] current ≈ {current_lufs:.2f} LUFS, target = {target_lufs:.2f} LUFS, gain = {gain_db:.2f} dB, factor = {factor:.3f}")
+
+    snd_norm = snd * factor
+    # Guard against amplitude clipping
+    snd_norm = np.clip(snd_norm, -1.0, 1.0)
+
+    def make_frame(t):
+        t_arr = np.array(t, dtype=float)
+        idx = (t_arr * fps).astype(int)
+        idx = np.clip(idx, 0, snd_norm.shape[0] - 1)
+        return snd_norm[idx]
+
+    normalized_audio = AudioClip(make_frame, duration=audio_clip.duration, fps=fps)
+    return normalized_audio
+
+
+
+def add_watermark(input_video_path, output_video_path, watermark_image_path):
+    # Load the video
+    video = VideoFileClip(input_video_path)
+
+    # Normalize the audio track
+    normalized_audio = normalize_audio_clip(video.audio, target_lufs=-14.0)
+
+    # Load the watermark image
+    watermark = ImageClip(watermark_image_path)
+
+    # Set the watermark duration to match the video duration
+    watermark = watermark.with_duration(video.duration)
+
+    # Set the watermark size: 50% of the video width
+    watermark_width = int(video.size[0] * 0.50)
+    watermark_height = int(watermark.size[1] * (watermark_width / watermark.size[0]))
+    watermark = watermark.resized(width=watermark_width, height=watermark_height)
+
+    # Set the watermark opacity (33%)
+    watermark = watermark.with_opacity(0.33)
+
+    # Time it takes for the watermark to travel from top to bottom
+    animation_duration = 30  # in seconds
+
+    # Function to animate the watermark position
+    def animate_position(t):
+        # Compute the Y position based on time
+        y_position = (t % animation_duration) / animation_duration * (video.size[1] - watermark.size[1])
+
+        # Change the horizontal position randomly every 5 seconds
+        x_position = random.randint(0, video.size[0] - watermark.size[0]) if t % 5 == 0 else None
+
+        # If x_position hasn't changed, use the last value
+        if not hasattr(animate_position, 'last_x_position'):
+            animate_position.last_x_position = 0  # default starting position
+        if x_position is not None:
+            animate_position.last_x_position = x_position
+
+        return (animate_position.last_x_position, y_position)
+
+    # Apply the animation to the watermark
+    watermark = watermark.with_position(animate_position)
+
+    # Overlay the watermark on the video
+    final_video = CompositeVideoClip([video, watermark])
+
+    # Use the normalized audio, if available
+    if normalized_audio is not None:
+        final_video = final_video.with_audio(normalized_audio)
+
+    # Save the video with the watermark and normalized audio
+    final_video.write_videofile(
+        output_video_path,
+        codec="libx264",
+        audio_codec="aac",
+        # Create the temporary audio file next to the output video
+        temp_audiofile_path=os.path.dirname(output_video_path)
+    )
+
+
+def main(raw_videos_path, output_folder_path, watermark_image_path):
+    # Create the output folder for watermarked videos if it doesn't exist
+    if not os.path.exists(output_folder_path):
+        os.makedirs(output_folder_path)
+
+    # Get a list of all video files in the folder
+    video_files = [f for f in os.listdir(raw_videos_path) if f.endswith(('.mp4', '.avi', '.mov', '.mkv', '.MP4'))]
+
+    # Process each video
+    for video_file in video_files:
+        input_video_path = os.path.join(raw_videos_path, video_file)
+        output_video_path = os.path.join(output_folder_path, f"watermarked_{video_file}")
+
+        print(f"Processing video: {video_file}")
+        add_watermark(input_video_path, output_video_path, watermark_image_path)
+        print(f"Video saved: {output_video_path}")
+
+
+if __name__ == "__main__":
+    # Path to the folder with raw videos
+    raw_videos_path = "raw_videos"
+
+    # Path to the folder for saving watermarked videos
+    output_folder_path = "watermarked_videos"
+
+    # Path to the watermark image
+    watermark_image_path = "watermark.png"
+
+    # Run batch processing
+    main(raw_videos_path, output_folder_path, watermark_image_path)
