@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 from tkinter import filedialog, messagebox
 
@@ -34,17 +35,41 @@ def save_settings(settings):
         print(f"Failed to save settings: {e}")
 
 
+# A number with at most 2 decimal places, using "." or "," as the separator;
+# incomplete input like "", "0" or "12." is allowed while typing
+PERCENT_INPUT_RE = re.compile(r"(0|[1-9][0-9]*)?([.,][0-9]{0,2})?")
+
+MAX_PERCENT = 100
+
+# Step of the arrow buttons, Up/Down keys and mouse wheel
+PERCENT_STEP = 1
+
+
 def is_percent_input(value):
-    # Empty is allowed while typing; otherwise a whole number from 1 to 100
-    if value == "":
-        return True
-    return value.isascii() and value.isdigit() and not value.startswith("0") and int(value) <= 100
+    if not PERCENT_INPUT_RE.fullmatch(value):
+        return False
+    number = parse_percent(value)
+    return number is None or number <= MAX_PERCENT
+
+
+def parse_percent(value):
+    # Returns the percentage as a number, or None if it isn't a number yet
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def format_percent(number):
+    # 50.0 -> "50", 12.50 -> "12.5"
+    return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
 def valid_percent_or(value, default):
-    # Use a saved percentage only if it is still a valid whole number
+    # Use a saved percentage only if it is still valid
     value = str(value) if value is not None else ""
-    return value if value != "" and is_percent_input(value) else default
+    number = parse_percent(value)
+    return value if is_percent_input(value) and number is not None and number > 0 else default
 
 
 class WatermarkApp:
@@ -86,37 +111,22 @@ class WatermarkApp:
         ctk.CTkLabel(frame, text="Watermark width:").grid(row=3, column=0, sticky="w", padx=10, pady=2)
         width_row = ctk.CTkFrame(frame, fg_color="transparent")
         width_row.grid(row=3, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        # Allow typing only whole numbers from 1 to 100
-        validate_percent = (root.register(is_percent_input), "%P")
-        ctk.CTkEntry(
-            width_row,
-            textvariable=self.width_var,
-            width=70,
-            validate="key",
-            validatecommand=validate_percent
-        ).grid(row=0, column=0)
-        ctk.CTkLabel(width_row, text="% of video width").grid(row=0, column=1, padx=(5, 0))
+        self._add_percent_field(width_row, self.width_var)
+        ctk.CTkLabel(width_row, text=f"% of video width (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
 
         # Watermark height: derived from the width, or a custom percentage of the video height
         ctk.CTkLabel(frame, text="Watermark height:").grid(row=4, column=0, sticky="w", padx=10, pady=2)
         height_row = ctk.CTkFrame(frame, fg_color="transparent")
         height_row.grid(row=4, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self.height_entry = ctk.CTkEntry(
-            height_row,
-            textvariable=self.height_var,
-            width=70,
-            validate="key",
-            validatecommand=validate_percent
-        )
-        self.height_entry.grid(row=0, column=0)
+        self.height_entry, self.height_arrows = self._add_percent_field(height_row, self.height_var)
         self.height_entry_text_color = self.height_entry.cget("text_color")
-        ctk.CTkLabel(height_row, text="% of video height").grid(row=0, column=1, padx=(5, 0))
+        ctk.CTkLabel(height_row, text=f"% of video height (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
         ctk.CTkCheckBox(
             height_row,
             text="Keep aspect ratio",
             variable=self.keep_ratio_var,
             command=self._update_height_entry
-        ).grid(row=0, column=2, padx=(20, 0))
+        ).grid(row=0, column=3, padx=(20, 0))
         self._update_height_entry()
 
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
@@ -162,6 +172,56 @@ class WatermarkApp:
             "keep_aspect_ratio": self.keep_ratio_var.get(),
         })
 
+    def _add_percent_field(self, parent, variable):
+        # Entry for a percentage with ▲/▼ buttons; returns the entry and the buttons
+        entry = ctk.CTkEntry(
+            parent,
+            textvariable=variable,
+            width=70,
+            validate="key",
+            validatecommand=(self.root.register(lambda value: self._validate_percent(variable, value)), "%P")
+        )
+        entry.grid(row=0, column=0)
+
+        arrows = ctk.CTkFrame(parent, fg_color="transparent")
+        arrows.grid(row=0, column=1, padx=(3, 0))
+        up = ctk.CTkButton(arrows, text="▲", width=22, height=13, font=("", 8),
+                           command=lambda: self._step_percent(entry, variable, 1))
+        up.grid(row=0, column=0, pady=(0, 1))
+        down = ctk.CTkButton(arrows, text="▼", width=22, height=13, font=("", 8),
+                             command=lambda: self._step_percent(entry, variable, -1))
+        down.grid(row=1, column=0)
+
+        # Up/Down keys and the mouse wheel change the value too
+        entry.bind("<Up>", lambda e: self._step_percent(entry, variable, 1))
+        entry.bind("<Down>", lambda e: self._step_percent(entry, variable, -1))
+        entry.bind("<MouseWheel>", lambda e: self._step_percent(entry, variable, 1 if e.delta > 0 else -1))
+        entry.bind("<Button-4>", lambda e: self._step_percent(entry, variable, 1))
+        entry.bind("<Button-5>", lambda e: self._step_percent(entry, variable, -1))
+
+        return entry, (up, down)
+
+    def _validate_percent(self, variable, value):
+        if not PERCENT_INPUT_RE.fullmatch(value):
+            return False
+        number = parse_percent(value)
+        if number is not None and number > MAX_PERCENT:
+            # Too large: reset the field to the maximum. Changing the variable inside
+            # the validation would turn validation off, so do it right after
+            self.root.after_idle(variable.set, format_percent(MAX_PERCENT))
+            return False
+        return True
+
+    def _step_percent(self, entry, variable, direction):
+        if entry.cget("state") == "disabled":
+            return
+        current = parse_percent(variable.get()) or 0
+        new = round(current + direction * PERCENT_STEP, 2)
+        # Stay within (0, 100]: going below zero keeps the current value
+        if new <= 0:
+            return
+        variable.set(format_percent(min(new, MAX_PERCENT)))
+
     def _update_height_entry(self):
         # The custom height is only used when the aspect ratio is not kept.
         # A disabled CTkEntry looks the same as an enabled one,
@@ -182,13 +242,16 @@ class WatermarkApp:
                 text_color=self.height_entry_text_color
             )
         self.height_entry.configure(validate="key")
+        for arrow in self.height_arrows:
+            arrow.configure(state="disabled" if self.keep_ratio_var.get() else "normal")
 
     def _parse_percent(self, value, name):
         # Returns the percentage as a number, or None after showing an error
-        if not is_percent_input(value) or value == "":
-            messagebox.showerror("Error", f"{name} must be a whole number from 1 to 100.")
+        percent = parse_percent(value) if is_percent_input(value) else None
+        if percent is None or percent <= 0:
+            messagebox.showerror("Error", f"{name} must be a number greater than 0 and up to {MAX_PERCENT}.")
             return None
-        return int(value)
+        return percent
 
     def _set_bar(self, bar, value):
         # customtkinter still draws a small rounded stub at 0,
