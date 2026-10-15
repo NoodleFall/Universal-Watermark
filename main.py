@@ -8,6 +8,8 @@ from moviepy.Clip import Clip
 from moviepy.audio.AudioClip import AudioClip
 from proglog import TqdmProgressBarLogger
 
+from constants import OUTPUT_EXTENSION_OVERRIDES, VIDEO_EXTENSIONS
+
 
 class RenderCancelled(Exception):
     """Raised when the user stops rendering."""
@@ -144,16 +146,26 @@ def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
 
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar",
-                  width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30):
+                  width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
+                  bitrate_kbps=None):
     """
     width_percent: watermark width as a percentage of the video width.
     height_percent: watermark height as a percentage of the video height,
         or None to derive it from the width, keeping the image aspect ratio.
     opacity_percent: watermark opacity, from 0 (invisible) to 100 (opaque).
     travel_time_seconds: time for the watermark to travel from the top to the bottom.
+    bitrate_kbps: video bitrate in kbit/s, or None to keep the bitrate of the original video.
     """
     # Load the video
     video = VideoFileClip(input_video_path)
+
+    # Bitrates to encode with: the custom video bitrate or the original one,
+    # and always the original audio bitrate (None lets ffmpeg choose)
+    audio_bitrate_kbps = get_audio_bitrate(video)
+    if bitrate_kbps is None:
+        bitrate_kbps = get_video_bitrate(video, audio_bitrate_kbps)
+    print(f"Video bitrate: {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'ffmpeg default'}, "
+          f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
 
     # Normalize the audio track
     normalized_audio = normalize_audio_clip(video.audio, target_lufs=-14.0)
@@ -214,6 +226,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
             output_video_path,
             codec="libx264",
             audio_codec="aac",
+            bitrate=f"{max(round(bitrate_kbps), 1)}k" if bitrate_kbps else None,
+            audio_bitrate=f"{audio_bitrate_kbps}k" if audio_bitrate_kbps else None,
             # Create the temporary audio file next to the output video
             temp_audiofile_path=os.path.dirname(output_video_path),
             logger=logger
@@ -224,6 +238,25 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     finally:
         # Stop the ffmpeg process that reads the source video
         video.close()
+
+
+def get_audio_bitrate(video):
+    # Original audio bitrate in kbit/s, or None if unknown
+    if video.audio is None:
+        return None
+    return video.audio.reader.bitrate or None
+
+
+def get_video_bitrate(video, audio_bitrate_kbps):
+    # Original video bitrate in kbit/s, or None if unknown
+    if video.reader.bitrate:
+        return video.reader.bitrate
+
+    # Some containers (e.g. MKV, WebM) store only the bitrate of the whole file
+    total_bitrate = video.reader.infos.get("bitrate")
+    if total_bitrate:
+        return max(total_bitrate - (audio_bitrate_kbps or 0), 1)
+    return None
 
 
 def remove_partial_files(output_video_path):
@@ -240,13 +273,13 @@ def remove_partial_files(output_video_path):
 
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
-         width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30):
+         width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30, bitrate_kbps=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
 
     # Get a list of all video files in the folder
-    video_files = [f for f in os.listdir(raw_videos_path) if f.endswith(('.mp4', '.avi', '.mov', '.mkv', '.MP4'))]
+    video_files = [f for f in os.listdir(raw_videos_path) if f.lower().endswith(VIDEO_EXTENSIONS)]
 
     # Process each video
     for i, video_file in enumerate(video_files):
@@ -259,7 +292,13 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             on_progress(i, len(video_files), video_file)
 
         input_video_path = os.path.join(raw_videos_path, video_file)
-        output_video_path = os.path.join(output_folder_path, f"watermarked_{video_file}")
+        # Keep the original extension unless the container can't hold H.264/AAC
+        name, original_extension = os.path.splitext(video_file)
+        extension = OUTPUT_EXTENSION_OVERRIDES.get(original_extension.lower(), original_extension)
+        # Don't overwrite the result of another video with the same name, e.g. clip.webm and clip.mp4
+        if extension != original_extension and any(f.lower() == (name + extension).lower() for f in video_files):
+            name += "_" + original_extension[1:]
+        output_video_path = os.path.join(output_folder_path, f"watermarked_{name}{extension}")
 
         # Use a logger that reports per-video progress and handles pause/stop, if requested
         if on_video_progress is not None or control is not None:
@@ -276,7 +315,8 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             width_percent=width_percent,
             height_percent=height_percent,
             opacity_percent=opacity_percent,
-            travel_time_seconds=travel_time_seconds
+            travel_time_seconds=travel_time_seconds,
+            bitrate_kbps=bitrate_kbps
         )
         print(f"Video saved: {output_video_path}")
 

@@ -8,6 +8,7 @@ import customtkinter as ctk
 from constants import (
     APP_NAME,
     DISABLED_TEXT_COLOR,
+    MAX_BITRATE_KBPS,
     MAX_PERCENT,
     MAX_TRAVEL_TIME_SECONDS,
     NUMBER_INPUT_RE,
@@ -82,18 +83,18 @@ class WatermarkApp:
         self.watermark_image_var = ctk.StringVar(value=settings.get("watermark_image_path", "watermark.png"))
         self.width_var = ctk.StringVar(value=valid_number_or(settings.get("width_percent"), "50", MAX_PERCENT))
         self.height_var = ctk.StringVar(value=valid_number_or(settings.get("height_percent"), "20", MAX_PERCENT))
-        # Shown in the height field while the aspect ratio is kept
-        self.auto_height_var = ctk.StringVar(value="auto")
         self.keep_ratio_var = ctk.BooleanVar(value=bool(settings.get("keep_aspect_ratio", True)))
         self.opacity_var = ctk.StringVar(value=valid_number_or(settings.get("opacity_percent"), "33", MAX_PERCENT))
         self.travel_time_var = ctk.StringVar(
             value=valid_number_or(settings.get("travel_time_seconds"), "30", MAX_TRAVEL_TIME_SECONDS)
         )
+        self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
+        self.original_bitrate_var = ctk.BooleanVar(value=bool(settings.get("original_bitrate", True)))
 
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
-                    self.travel_time_var):
+                    self.travel_time_var, self.bitrate_var, self.original_bitrate_var):
             var.trace_add("write", self._save_settings)
 
         self.status_var = ctk.StringVar(value="Ready")
@@ -107,6 +108,8 @@ class WatermarkApp:
         # Inputs that are locked while rendering
         self.input_entries = []
         self.input_buttons = []
+        # Fields that can be switched to an automatic value by a checkbox
+        self.auto_fields = []
 
         self._add_path_row(frame, 0, "Raw videos folder:", self.raw_videos_var, self._browse_raw_videos)
         self._add_path_row(frame, 1, "Output folder:", self.output_folder_var, self._browse_output_folder)
@@ -123,18 +126,10 @@ class WatermarkApp:
         ctk.CTkLabel(frame, text="Watermark height:").grid(row=4, column=0, sticky="w", padx=10, pady=2)
         height_row = ctk.CTkFrame(frame, fg_color="transparent")
         height_row.grid(row=4, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self.height_entry, self.height_arrows = self._add_number_field(height_row, self.height_var, MAX_PERCENT)
-        self.height_entry_text_color = self.height_entry.cget("text_color")
-        ctk.CTkLabel(height_row, text=f"% of video height (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
-        keep_ratio_checkbox = ctk.CTkCheckBox(
-            height_row,
-            text="Keep aspect ratio",
-            variable=self.keep_ratio_var,
-            command=self._update_height_entry
+        self._add_auto_field(
+            height_row, self.height_var, MAX_PERCENT, f"% of video height (max: {MAX_PERCENT})",
+            self.keep_ratio_var, "Keep aspect ratio", "auto"
         )
-        keep_ratio_checkbox.grid(row=0, column=3, padx=(20, 0))
-        self.input_buttons.append(keep_ratio_checkbox)
-        self._update_height_entry()
 
         # Watermark opacity: 100% is fully opaque
         ctk.CTkLabel(frame, text="Watermark opacity:").grid(row=5, column=0, sticky="w", padx=10, pady=2)
@@ -153,8 +148,17 @@ class WatermarkApp:
             text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
         ).grid(row=0, column=2, padx=(5, 0))
 
+        # Video bitrate: the bitrate of each original video, or a custom one
+        ctk.CTkLabel(frame, text="Video bitrate:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
+        bitrate_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_auto_field(
+            bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
+            self.original_bitrate_var, "Same as original", "original"
+        )
+
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=7, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=8, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -171,19 +175,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=8, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=8, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=9, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=9, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=9, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=10, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=10, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=11, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
     def _save_settings(self, *args):
         save_settings({
@@ -195,6 +199,8 @@ class WatermarkApp:
             "keep_aspect_ratio": self.keep_ratio_var.get(),
             "opacity_percent": self.opacity_var.get(),
             "travel_time_seconds": self.travel_time_var.get(),
+            "bitrate_kbps": self.bitrate_var.get(),
+            "original_bitrate": self.original_bitrate_var.get(),
         })
 
     def _add_number_field(self, parent, variable, max_value):
@@ -252,28 +258,47 @@ class WatermarkApp:
             return
         variable.set(format_number(min(new, max_value)))
 
-    def _update_height_entry(self):
-        # The custom height is only used when the aspect ratio is not kept.
+    def _add_auto_field(self, parent, variable, max_value, label, auto_var, checkbox_text, auto_text):
+        # Number field with a checkbox that switches it to an automatic value,
+        # e.g. the height kept from the aspect ratio or the original bitrate
+        entry, arrows = self._add_number_field(parent, variable, max_value)
+        ctk.CTkLabel(parent, text=label).grid(row=0, column=2, padx=(5, 0))
+        field = {
+            "entry": entry,
+            "arrows": arrows,
+            "variable": variable,
+            "auto_var": auto_var,
+            # Shown in the field instead of the number while the checkbox is on
+            "auto_text_var": ctk.StringVar(value=auto_text),
+            "text_color": entry.cget("text_color"),
+        }
+        checkbox = ctk.CTkCheckBox(
+            parent,
+            text=checkbox_text,
+            variable=auto_var,
+            command=lambda: self._update_auto_field(field)
+        )
+        checkbox.grid(row=0, column=3, padx=(20, 0))
+        self.input_buttons.append(checkbox)
+        self.auto_fields.append(field)
+        self._update_auto_field(field)
+
+    def _update_auto_field(self, field):
+        # The custom value is only used when the checkbox is off.
         # A disabled CTkEntry looks the same as an enabled one,
-        # so also show "auto" in gray instead of the custom value.
-        # Switching the variable runs the input validation on "auto", and Tk turns
+        # so also show the automatic value in gray instead of the custom one.
+        # Switching the variable runs the input validation on that text, and Tk turns
         # validation off for good when it fails, so pause it during the switch
-        self.height_entry.configure(validate="none")
-        if self.keep_ratio_var.get():
-            self.height_entry.configure(
-                state="disabled",
-                textvariable=self.auto_height_var,
-                text_color=DISABLED_TEXT_COLOR
-            )
+        entry = field["entry"]
+        is_auto = field["auto_var"].get()
+        entry.configure(validate="none")
+        if is_auto:
+            entry.configure(state="disabled", textvariable=field["auto_text_var"], text_color=DISABLED_TEXT_COLOR)
         else:
-            self.height_entry.configure(
-                state="normal",
-                textvariable=self.height_var,
-                text_color=self.height_entry_text_color
-            )
-        self.height_entry.configure(validate="key")
-        for arrow in self.height_arrows:
-            arrow.configure(state="disabled" if self.keep_ratio_var.get() else "normal")
+            entry.configure(state="normal", textvariable=field["variable"], text_color=field["text_color"])
+        entry.configure(validate="key")
+        for arrow in field["arrows"]:
+            arrow.configure(state="disabled" if is_auto else "normal")
 
     def _parse_number(self, value, name, max_value):
         # Returns the field value as a number, or None after showing an error
@@ -305,24 +330,27 @@ class WatermarkApp:
         # Lock or unlock the settings; a disabled CTkEntry looks the same
         # as an enabled one, so also gray out its text
         state = "normal" if enabled else "disabled"
+        auto_entries = [field["entry"] for field in self.auto_fields]
+        auto_arrows = [arrow for field in self.auto_fields for arrow in field["arrows"]]
         for entry in self.input_entries:
-            if entry is self.height_entry:
+            if entry in auto_entries:
                 continue
             if not hasattr(entry, "default_text_color"):
                 entry.default_text_color = entry.cget("text_color")
             entry.configure(state=state, text_color=entry.default_text_color if enabled else DISABLED_TEXT_COLOR)
         for button in self.input_buttons:
-            if button in self.height_arrows:
+            if button in auto_arrows:
                 continue
             button.configure(state=state)
 
-        # The height field also depends on the "Keep aspect ratio" checkbox
-        if enabled:
-            self._update_height_entry()
-        else:
-            self.height_entry.configure(state="disabled", text_color=DISABLED_TEXT_COLOR)
-            for arrow in self.height_arrows:
-                arrow.configure(state="disabled")
+        # Fields with an automatic value also depend on their checkbox
+        for field in self.auto_fields:
+            if enabled:
+                self._update_auto_field(field)
+            else:
+                field["entry"].configure(state="disabled", text_color=DISABLED_TEXT_COLOR)
+                for arrow in field["arrows"]:
+                    arrow.configure(state="disabled")
 
     def _browse_raw_videos(self):
         path = filedialog.askdirectory(title="Select raw videos folder")
@@ -376,6 +404,14 @@ class WatermarkApp:
         if travel_time_seconds is None:
             return
 
+        # Validate the video bitrate; None keeps the bitrate of each original video
+        if self.original_bitrate_var.get():
+            bitrate_kbps = None
+        else:
+            bitrate_kbps = self._parse_number(self.bitrate_var.get(), "Video bitrate", MAX_BITRATE_KBPS)
+            if bitrate_kbps is None:
+                return
+
         self.control = RenderControl()
         self.paused = False
         self.processing_status = "Starting…"
@@ -392,7 +428,7 @@ class WatermarkApp:
         thread = threading.Thread(
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
-                  width_percent, height_percent, opacity_percent, travel_time_seconds),
+                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps),
             daemon=True
         )
         thread.start()
@@ -442,7 +478,7 @@ class WatermarkApp:
         self.stop_button.configure(state="disabled")
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent, travel_time_seconds):
+                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps):
         try:
             main(
                 raw_videos_path,
@@ -454,7 +490,8 @@ class WatermarkApp:
                 width_percent=width_percent,
                 height_percent=height_percent,
                 opacity_percent=opacity_percent,
-                travel_time_seconds=travel_time_seconds
+                travel_time_seconds=travel_time_seconds,
+                bitrate_kbps=bitrate_kbps
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)
