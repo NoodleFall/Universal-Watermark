@@ -25,3 +25,18 @@ VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv", ".f
 
 # Containers that can't hold H.264 video with AAC audio are saved with another extension
 OUTPUT_EXTENSION_OVERRIDES = {".webm": ".mp4"}
+
+# Audio normalization targets of popular platforms and standards, in LUFS
+# (platforms with the same target share one preset)
+LOUDNESS_PRESETS = {
+    "Spotify Loud (-11 LUFS)": -11.0,
+    "YouTube / Spotify / Amazon Music / Tidal (-14 LUFS)": -14.0,
+    "Deezer (-15 LUFS)": -15.0,
+    "Apple Music / Podcasts (-16 LUFS)": -16.0,
+    "Spotify Quiet (-19 LUFS)": -19.0,
+    "Broadcast EBU R128 (-23 LUFS)": -23.0,
+    "Broadcast ATSC A/85 (-24 LUFS)": -24.0,
+}
+
+# Preset selected by default: -14 LUFS, the level the program has always used
+DEFAULT_LOUDNESS_PRESET = "YouTube / Spotify / Amazon Music / Tidal (-14 LUFS)"

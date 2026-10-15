@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 from tkinter import filedialog, messagebox
@@ -8,66 +7,17 @@ import customtkinter as ctk
 from constants import (
     APP_NAME,
     DISABLED_TEXT_COLOR,
+    LOUDNESS_PRESETS,
     MAX_BITRATE_KBPS,
     MAX_PERCENT,
     MAX_TRAVEL_TIME_SECONDS,
     NUMBER_INPUT_RE,
     NUMBER_STEP,
 )
-from main import RenderCancelled, RenderControl, main
-
-
-def get_settings_path():
-    # %APPDATA% on Windows, ~/.config (or $XDG_CONFIG_HOME) elsewhere
-    config_dir = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(config_dir, APP_NAME, "settings.json")
-
-
-def load_settings():
-    try:
-        with open(get_settings_path(), encoding="utf-8") as f:
-            settings = json.load(f)
-    except (OSError, ValueError):
-        # No saved settings yet, or the file is broken
-        return {}
-    return settings if isinstance(settings, dict) else {}
-
-
-def save_settings(settings):
-    settings_path = get_settings_path()
-    try:
-        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
-        with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
-    except OSError as e:
-        print(f"Failed to save settings: {e}")
-
-
-def is_number_input(value, max_value):
-    if not NUMBER_INPUT_RE.fullmatch(value):
-        return False
-    number = parse_number(value)
-    return number is None or number <= max_value
-
-
-def parse_number(value):
-    # Returns the field value as a number, or None if it isn't a number yet
-    try:
-        return float(value.replace(",", "."))
-    except ValueError:
-        return None
-
-
-def format_number(number):
-    # 50.0 -> "50", 12.50 -> "12.5"
-    return f"{number:.2f}".rstrip("0").rstrip(".")
-
-
-def valid_number_or(value, default, max_value):
-    # Use a saved value only if it is still valid
-    value = str(value) if value is not None else ""
-    number = parse_number(value)
-    return value if is_number_input(value, max_value) and number is not None and number > 0 else default
+from functions.render_control import RenderCancelled, RenderControl
+from main import main
+from number_input import format_number, is_number_input, parse_number, valid_number_or
+from settings import find_loudness_preset, load_settings, save_settings
 
 
 class WatermarkApp:
@@ -90,11 +40,14 @@ class WatermarkApp:
         )
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
         self.original_bitrate_var = ctk.BooleanVar(value=bool(settings.get("original_bitrate", True)))
+        self.normalize_audio_var = ctk.BooleanVar(value=bool(settings.get("normalize_audio", False)))
+        self.loudness_preset_var = ctk.StringVar(value=find_loudness_preset(settings.get("loudness_preset")))
 
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
-                    self.travel_time_var, self.bitrate_var, self.original_bitrate_var):
+                    self.travel_time_var, self.bitrate_var, self.original_bitrate_var,
+                    self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
 
         self.status_var = ctk.StringVar(value="Ready")
@@ -157,8 +110,29 @@ class WatermarkApp:
             self.original_bitrate_var, "Same as original", "original"
         )
 
+        # Audio normalization: off, or a loudness preset of a platform or standard
+        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        loudness_row = ctk.CTkFrame(frame, fg_color="transparent")
+        loudness_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        normalize_checkbox = ctk.CTkCheckBox(
+            loudness_row,
+            text="Normalize",
+            variable=self.normalize_audio_var,
+            command=self._update_loudness_menu
+        )
+        normalize_checkbox.grid(row=0, column=0)
+        self.input_buttons.append(normalize_checkbox)
+        self.loudness_menu = ctk.CTkOptionMenu(
+            loudness_row,
+            variable=self.loudness_preset_var,
+            values=list(LOUDNESS_PRESETS),
+            width=360
+        )
+        self.loudness_menu.grid(row=0, column=1, padx=(10, 0))
+        self._update_loudness_menu()
+
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=8, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=9, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -175,19 +149,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=9, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=9, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=10, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=10, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=10, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=11, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=11, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=12, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
     def _save_settings(self, *args):
         save_settings({
@@ -201,6 +175,8 @@ class WatermarkApp:
             "travel_time_seconds": self.travel_time_var.get(),
             "bitrate_kbps": self.bitrate_var.get(),
             "original_bitrate": self.original_bitrate_var.get(),
+            "normalize_audio": self.normalize_audio_var.get(),
+            "loudness_preset": self.loudness_preset_var.get(),
         })
 
     def _add_number_field(self, parent, variable, max_value):
@@ -352,6 +328,16 @@ class WatermarkApp:
                 for arrow in field["arrows"]:
                     arrow.configure(state="disabled")
 
+        # The loudness preset menu also depends on the "Normalize" checkbox
+        if enabled:
+            self._update_loudness_menu()
+        else:
+            self.loudness_menu.configure(state="disabled")
+
+    def _update_loudness_menu(self):
+        # A preset can only be chosen while normalization is on
+        self.loudness_menu.configure(state="normal" if self.normalize_audio_var.get() else "disabled")
+
     def _browse_raw_videos(self):
         path = filedialog.askdirectory(title="Select raw videos folder")
         if path:
@@ -412,6 +398,12 @@ class WatermarkApp:
             if bitrate_kbps is None:
                 return
 
+        # Loudness to normalize the audio to; None keeps the original audio
+        if self.normalize_audio_var.get():
+            target_lufs = LOUDNESS_PRESETS[self.loudness_preset_var.get()]
+        else:
+            target_lufs = None
+
         self.control = RenderControl()
         self.paused = False
         self.processing_status = "Starting…"
@@ -428,7 +420,7 @@ class WatermarkApp:
         thread = threading.Thread(
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
-                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps),
+                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs),
             daemon=True
         )
         thread.start()
@@ -478,7 +470,7 @@ class WatermarkApp:
         self.stop_button.configure(state="disabled")
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps):
+                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs):
         try:
             main(
                 raw_videos_path,
@@ -491,7 +483,8 @@ class WatermarkApp:
                 height_percent=height_percent,
                 opacity_percent=opacity_percent,
                 travel_time_seconds=travel_time_seconds,
-                bitrate_kbps=bitrate_kbps
+                bitrate_kbps=bitrate_kbps,
+                target_lufs=target_lufs
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)
@@ -547,10 +540,14 @@ class WatermarkApp:
         messagebox.showerror("Error", str(error))
 
 
-if __name__ == "__main__":
+def run():
     # Follow the system light/dark theme
     ctk.set_appearance_mode("system")
 
     root = ctk.CTk()
     WatermarkApp(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    run()
