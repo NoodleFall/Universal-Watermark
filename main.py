@@ -144,12 +144,13 @@ def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
 
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar",
-                  width_percent=50, height_percent=None, opacity_percent=33):
+                  width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30):
     """
     width_percent: watermark width as a percentage of the video width.
     height_percent: watermark height as a percentage of the video height,
         or None to derive it from the width, keeping the image aspect ratio.
     opacity_percent: watermark opacity, from 0 (invisible) to 100 (opaque).
+    travel_time_seconds: time for the watermark to travel from the top to the bottom.
     """
     # Load the video
     video = VideoFileClip(input_video_path)
@@ -179,7 +180,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     watermark = watermark.with_opacity(min(max(opacity_percent, 0), 100) / 100)
 
     # Time it takes for the watermark to travel from top to bottom
-    animation_duration = 30  # in seconds
+    animation_duration = travel_time_seconds  # in seconds
 
     # Function to animate the watermark position
     def animate_position(t):
@@ -239,7 +240,7 @@ def remove_partial_files(output_video_path):
 
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
-         width_percent=50, height_percent=None, opacity_percent=33):
+         width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -274,7 +275,8 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             logger=logger,
             width_percent=width_percent,
             height_percent=height_percent,
-            opacity_percent=opacity_percent
+            opacity_percent=opacity_percent,
+            travel_time_seconds=travel_time_seconds
         )
         print(f"Video saved: {output_video_path}")
 

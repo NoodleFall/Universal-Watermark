@@ -5,7 +5,13 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from constants import DISABLED_TEXT_COLOR, MAX_PERCENT, PERCENT_INPUT_RE, PERCENT_STEP
+from constants import (
+    DISABLED_TEXT_COLOR,
+    MAX_PERCENT,
+    MAX_TRAVEL_TIME_SECONDS,
+    NUMBER_INPUT_RE,
+    NUMBER_STEP,
+)
 from main import RenderCancelled, RenderControl, main
 
 
@@ -35,31 +41,31 @@ def save_settings(settings):
         print(f"Failed to save settings: {e}")
 
 
-def is_percent_input(value):
-    if not PERCENT_INPUT_RE.fullmatch(value):
+def is_number_input(value, max_value):
+    if not NUMBER_INPUT_RE.fullmatch(value):
         return False
-    number = parse_percent(value)
-    return number is None or number <= MAX_PERCENT
+    number = parse_number(value)
+    return number is None or number <= max_value
 
 
-def parse_percent(value):
-    # Returns the percentage as a number, or None if it isn't a number yet
+def parse_number(value):
+    # Returns the field value as a number, or None if it isn't a number yet
     try:
         return float(value.replace(",", "."))
     except ValueError:
         return None
 
 
-def format_percent(number):
+def format_number(number):
     # 50.0 -> "50", 12.50 -> "12.5"
     return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
-def valid_percent_or(value, default):
-    # Use a saved percentage only if it is still valid
+def valid_number_or(value, default, max_value):
+    # Use a saved value only if it is still valid
     value = str(value) if value is not None else ""
-    number = parse_percent(value)
-    return value if is_percent_input(value) and number is not None and number > 0 else default
+    number = parse_number(value)
+    return value if is_number_input(value, max_value) and number is not None and number > 0 else default
 
 
 class WatermarkApp:
@@ -73,16 +79,20 @@ class WatermarkApp:
         self.raw_videos_var = ctk.StringVar(value=settings.get("raw_videos_path", "raw_videos"))
         self.output_folder_var = ctk.StringVar(value=settings.get("output_folder_path", "watermarked_videos"))
         self.watermark_image_var = ctk.StringVar(value=settings.get("watermark_image_path", "watermark.png"))
-        self.width_var = ctk.StringVar(value=valid_percent_or(settings.get("width_percent"), "50"))
-        self.height_var = ctk.StringVar(value=valid_percent_or(settings.get("height_percent"), "20"))
+        self.width_var = ctk.StringVar(value=valid_number_or(settings.get("width_percent"), "50", MAX_PERCENT))
+        self.height_var = ctk.StringVar(value=valid_number_or(settings.get("height_percent"), "20", MAX_PERCENT))
         # Shown in the height field while the aspect ratio is kept
         self.auto_height_var = ctk.StringVar(value="auto")
         self.keep_ratio_var = ctk.BooleanVar(value=bool(settings.get("keep_aspect_ratio", True)))
-        self.opacity_var = ctk.StringVar(value=valid_percent_or(settings.get("opacity_percent"), "33"))
+        self.opacity_var = ctk.StringVar(value=valid_number_or(settings.get("opacity_percent"), "33", MAX_PERCENT))
+        self.travel_time_var = ctk.StringVar(
+            value=valid_number_or(settings.get("travel_time_seconds"), "30", MAX_TRAVEL_TIME_SECONDS)
+        )
 
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
-                    self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var):
+                    self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
+                    self.travel_time_var):
             var.trace_add("write", self._save_settings)
 
         self.status_var = ctk.StringVar(value="Ready")
@@ -105,14 +115,14 @@ class WatermarkApp:
         ctk.CTkLabel(frame, text="Watermark width:").grid(row=3, column=0, sticky="w", padx=10, pady=2)
         width_row = ctk.CTkFrame(frame, fg_color="transparent")
         width_row.grid(row=3, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_percent_field(width_row, self.width_var)
+        self._add_number_field(width_row, self.width_var, MAX_PERCENT)
         ctk.CTkLabel(width_row, text=f"% of video width (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
 
         # Watermark height: derived from the width, or a custom percentage of the video height
         ctk.CTkLabel(frame, text="Watermark height:").grid(row=4, column=0, sticky="w", padx=10, pady=2)
         height_row = ctk.CTkFrame(frame, fg_color="transparent")
         height_row.grid(row=4, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self.height_entry, self.height_arrows = self._add_percent_field(height_row, self.height_var)
+        self.height_entry, self.height_arrows = self._add_number_field(height_row, self.height_var, MAX_PERCENT)
         self.height_entry_text_color = self.height_entry.cget("text_color")
         ctk.CTkLabel(height_row, text=f"% of video height (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
         keep_ratio_checkbox = ctk.CTkCheckBox(
@@ -129,11 +139,21 @@ class WatermarkApp:
         ctk.CTkLabel(frame, text="Watermark opacity:").grid(row=5, column=0, sticky="w", padx=10, pady=2)
         opacity_row = ctk.CTkFrame(frame, fg_color="transparent")
         opacity_row.grid(row=5, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_percent_field(opacity_row, self.opacity_var)
+        self._add_number_field(opacity_row, self.opacity_var, MAX_PERCENT)
         ctk.CTkLabel(opacity_row, text=f"% (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
 
+        # Time for the watermark to travel from the top to the bottom of the video
+        ctk.CTkLabel(frame, text="Travel time:").grid(row=6, column=0, sticky="w", padx=10, pady=2)
+        travel_time_row = ctk.CTkFrame(frame, fg_color="transparent")
+        travel_time_row.grid(row=6, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_number_field(travel_time_row, self.travel_time_var, MAX_TRAVEL_TIME_SECONDS)
+        ctk.CTkLabel(
+            travel_time_row,
+            text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
+        ).grid(row=0, column=2, padx=(5, 0))
+
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=6, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=7, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -150,19 +170,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=7, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=7, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=8, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=8, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=8, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=9, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=9, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=10, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
     def _save_settings(self, *args):
         save_settings({
@@ -173,59 +193,63 @@ class WatermarkApp:
             "height_percent": self.height_var.get(),
             "keep_aspect_ratio": self.keep_ratio_var.get(),
             "opacity_percent": self.opacity_var.get(),
+            "travel_time_seconds": self.travel_time_var.get(),
         })
 
-    def _add_percent_field(self, parent, variable):
-        # Entry for a percentage with ▲/▼ buttons; returns the entry and the buttons
+    def _add_number_field(self, parent, variable, max_value):
+        # Entry for a number up to max_value with ▲/▼ buttons; returns the entry and the buttons
         entry = ctk.CTkEntry(
             parent,
             textvariable=variable,
             width=70,
             validate="key",
-            validatecommand=(self.root.register(lambda value: self._validate_percent(variable, value)), "%P")
+            validatecommand=(
+                self.root.register(lambda value: self._validate_number(variable, value, max_value)),
+                "%P"
+            )
         )
         entry.grid(row=0, column=0)
 
         arrows = ctk.CTkFrame(parent, fg_color="transparent")
         arrows.grid(row=0, column=1, padx=(3, 0))
         up = ctk.CTkButton(arrows, text="▲", width=22, height=13, font=("", 8),
-                           command=lambda: self._step_percent(entry, variable, 1))
+                           command=lambda: self._step_number(entry, variable, max_value, 1))
         up.grid(row=0, column=0, pady=(0, 1))
         down = ctk.CTkButton(arrows, text="▼", width=22, height=13, font=("", 8),
-                             command=lambda: self._step_percent(entry, variable, -1))
+                             command=lambda: self._step_number(entry, variable, max_value, -1))
         down.grid(row=1, column=0)
 
         # Up/Down keys and the mouse wheel change the value too
-        entry.bind("<Up>", lambda e: self._step_percent(entry, variable, 1))
-        entry.bind("<Down>", lambda e: self._step_percent(entry, variable, -1))
-        entry.bind("<MouseWheel>", lambda e: self._step_percent(entry, variable, 1 if e.delta > 0 else -1))
-        entry.bind("<Button-4>", lambda e: self._step_percent(entry, variable, 1))
-        entry.bind("<Button-5>", lambda e: self._step_percent(entry, variable, -1))
+        entry.bind("<Up>", lambda e: self._step_number(entry, variable, max_value, 1))
+        entry.bind("<Down>", lambda e: self._step_number(entry, variable, max_value, -1))
+        entry.bind("<MouseWheel>", lambda e: self._step_number(entry, variable, max_value, 1 if e.delta > 0 else -1))
+        entry.bind("<Button-4>", lambda e: self._step_number(entry, variable, max_value, 1))
+        entry.bind("<Button-5>", lambda e: self._step_number(entry, variable, max_value, -1))
 
         self.input_entries.append(entry)
         self.input_buttons.extend((up, down))
         return entry, (up, down)
 
-    def _validate_percent(self, variable, value):
-        if not PERCENT_INPUT_RE.fullmatch(value):
+    def _validate_number(self, variable, value, max_value):
+        if not NUMBER_INPUT_RE.fullmatch(value):
             return False
-        number = parse_percent(value)
-        if number is not None and number > MAX_PERCENT:
+        number = parse_number(value)
+        if number is not None and number > max_value:
             # Too large: reset the field to the maximum. Changing the variable inside
             # the validation would turn validation off, so do it right after
-            self.root.after_idle(variable.set, format_percent(MAX_PERCENT))
+            self.root.after_idle(variable.set, format_number(max_value))
             return False
         return True
 
-    def _step_percent(self, entry, variable, direction):
+    def _step_number(self, entry, variable, max_value, direction):
         if entry.cget("state") == "disabled":
             return
-        current = parse_percent(variable.get()) or 0
-        new = round(current + direction * PERCENT_STEP, 2)
-        # Stay within (0, 100]: going below zero keeps the current value
+        current = parse_number(variable.get()) or 0
+        new = round(current + direction * NUMBER_STEP, 2)
+        # Stay within (0, max_value]: going below zero keeps the current value
         if new <= 0:
             return
-        variable.set(format_percent(min(new, MAX_PERCENT)))
+        variable.set(format_number(min(new, max_value)))
 
     def _update_height_entry(self):
         # The custom height is only used when the aspect ratio is not kept.
@@ -250,13 +274,13 @@ class WatermarkApp:
         for arrow in self.height_arrows:
             arrow.configure(state="disabled" if self.keep_ratio_var.get() else "normal")
 
-    def _parse_percent(self, value, name):
-        # Returns the percentage as a number, or None after showing an error
-        percent = parse_percent(value) if is_percent_input(value) else None
-        if percent is None or percent <= 0:
-            messagebox.showerror("Error", f"{name} must be a number greater than 0 and up to {MAX_PERCENT}.")
+    def _parse_number(self, value, name, max_value):
+        # Returns the field value as a number, or None after showing an error
+        number = parse_number(value) if is_number_input(value, max_value) else None
+        if number is None or number <= 0:
+            messagebox.showerror("Error", f"{name} must be a number greater than 0 and up to {format_number(max_value)}.")
             return None
-        return percent
+        return number
 
     def _set_bar(self, bar, value):
         # customtkinter still draws a small rounded stub at 0,
@@ -331,19 +355,24 @@ class WatermarkApp:
             return
 
         # Validate the watermark size
-        width_percent = self._parse_percent(self.width_var.get(), "Watermark width")
+        width_percent = self._parse_number(self.width_var.get(), "Watermark width", MAX_PERCENT)
         if width_percent is None:
             return
         if self.keep_ratio_var.get():
             height_percent = None
         else:
-            height_percent = self._parse_percent(self.height_var.get(), "Watermark height")
+            height_percent = self._parse_number(self.height_var.get(), "Watermark height", MAX_PERCENT)
             if height_percent is None:
                 return
 
         # Validate the watermark opacity
-        opacity_percent = self._parse_percent(self.opacity_var.get(), "Watermark opacity")
+        opacity_percent = self._parse_number(self.opacity_var.get(), "Watermark opacity", MAX_PERCENT)
         if opacity_percent is None:
+            return
+
+        # Validate the travel time
+        travel_time_seconds = self._parse_number(self.travel_time_var.get(), "Travel time", MAX_TRAVEL_TIME_SECONDS)
+        if travel_time_seconds is None:
             return
 
         self.control = RenderControl()
@@ -362,7 +391,7 @@ class WatermarkApp:
         thread = threading.Thread(
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
-                  width_percent, height_percent, opacity_percent),
+                  width_percent, height_percent, opacity_percent, travel_time_seconds),
             daemon=True
         )
         thread.start()
@@ -412,7 +441,7 @@ class WatermarkApp:
         self.stop_button.configure(state="disabled")
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent):
+                 width_percent, height_percent, opacity_percent, travel_time_seconds):
         try:
             main(
                 raw_videos_path,
@@ -423,7 +452,8 @@ class WatermarkApp:
                 control=control,
                 width_percent=width_percent,
                 height_percent=height_percent,
-                opacity_percent=opacity_percent
+                opacity_percent=opacity_percent,
+                travel_time_seconds=travel_time_seconds
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)
