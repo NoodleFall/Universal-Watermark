@@ -1,11 +1,11 @@
 import json
 import os
-import re
 import threading
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
+from constants import DISABLED_TEXT_COLOR, MAX_PERCENT, PERCENT_INPUT_RE, PERCENT_STEP
 from main import RenderCancelled, RenderControl, main
 
 
@@ -33,16 +33,6 @@ def save_settings(settings):
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except OSError as e:
         print(f"Failed to save settings: {e}")
-
-
-# A number with at most 2 decimal places, using "." or "," as the separator;
-# incomplete input like "", "0" or "12." is allowed while typing
-PERCENT_INPUT_RE = re.compile(r"(0|[1-9][0-9]*)?([.,][0-9]{0,2})?")
-
-MAX_PERCENT = 100
-
-# Step of the arrow buttons, Up/Down keys and mouse wheel
-PERCENT_STEP = 1
 
 
 def is_percent_input(value):
@@ -88,20 +78,24 @@ class WatermarkApp:
         # Shown in the height field while the aspect ratio is kept
         self.auto_height_var = ctk.StringVar(value="auto")
         self.keep_ratio_var = ctk.BooleanVar(value=bool(settings.get("keep_aspect_ratio", True)))
+        self.opacity_var = ctk.StringVar(value=valid_percent_or(settings.get("opacity_percent"), "33"))
 
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
-                    self.width_var, self.height_var, self.keep_ratio_var):
+                    self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var):
             var.trace_add("write", self._save_settings)
 
         self.status_var = ctk.StringVar(value="Ready")
         self.video_percent_var = ctk.StringVar(value="0%")
-        self.counts_var = ctk.StringVar(value="Processed: 0 / 0")
 
         frame = ctk.CTkFrame(root)
         frame.grid(sticky="nsew", padx=10, pady=10)
         root.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
+
+        # Inputs that are locked while rendering
+        self.input_entries = []
+        self.input_buttons = []
 
         self._add_path_row(frame, 0, "Raw videos folder:", self.raw_videos_var, self._browse_raw_videos)
         self._add_path_row(frame, 1, "Output folder:", self.output_folder_var, self._browse_output_folder)
@@ -121,16 +115,25 @@ class WatermarkApp:
         self.height_entry, self.height_arrows = self._add_percent_field(height_row, self.height_var)
         self.height_entry_text_color = self.height_entry.cget("text_color")
         ctk.CTkLabel(height_row, text=f"% of video height (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
-        ctk.CTkCheckBox(
+        keep_ratio_checkbox = ctk.CTkCheckBox(
             height_row,
             text="Keep aspect ratio",
             variable=self.keep_ratio_var,
             command=self._update_height_entry
-        ).grid(row=0, column=3, padx=(20, 0))
+        )
+        keep_ratio_checkbox.grid(row=0, column=3, padx=(20, 0))
+        self.input_buttons.append(keep_ratio_checkbox)
         self._update_height_entry()
 
+        # Watermark opacity: 100% is fully opaque
+        ctk.CTkLabel(frame, text="Watermark opacity:").grid(row=5, column=0, sticky="w", padx=10, pady=2)
+        opacity_row = ctk.CTkFrame(frame, fg_color="transparent")
+        opacity_row.grid(row=5, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_percent_field(opacity_row, self.opacity_var)
+        ctk.CTkLabel(opacity_row, text=f"% (max: {MAX_PERCENT})").grid(row=0, column=2, padx=(5, 0))
+
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=5, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=6, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -147,20 +150,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=6, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=6, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=6, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=7, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=7, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=7, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.counts_var).grid(row=7, column=2, sticky="w", padx=10, pady=2)
+        self.progress.grid(row=8, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=9, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
     def _save_settings(self, *args):
         save_settings({
@@ -170,6 +172,7 @@ class WatermarkApp:
             "width_percent": self.width_var.get(),
             "height_percent": self.height_var.get(),
             "keep_aspect_ratio": self.keep_ratio_var.get(),
+            "opacity_percent": self.opacity_var.get(),
         })
 
     def _add_percent_field(self, parent, variable):
@@ -199,6 +202,8 @@ class WatermarkApp:
         entry.bind("<Button-4>", lambda e: self._step_percent(entry, variable, 1))
         entry.bind("<Button-5>", lambda e: self._step_percent(entry, variable, -1))
 
+        self.input_entries.append(entry)
+        self.input_buttons.extend((up, down))
         return entry, (up, down)
 
     def _validate_percent(self, variable, value):
@@ -233,7 +238,7 @@ class WatermarkApp:
             self.height_entry.configure(
                 state="disabled",
                 textvariable=self.auto_height_var,
-                text_color=("gray55", "gray50")
+                text_color=DISABLED_TEXT_COLOR
             )
         else:
             self.height_entry.configure(
@@ -264,8 +269,35 @@ class WatermarkApp:
 
     def _add_path_row(self, frame, row, label, variable, browse_command):
         ctk.CTkLabel(frame, text=label).grid(row=row, column=0, sticky="w", padx=10, pady=(10 if row == 0 else 2, 2))
-        ctk.CTkEntry(frame, textvariable=variable, width=350).grid(row=row, column=1, sticky="ew", padx=5, pady=(10 if row == 0 else 2, 2))
-        ctk.CTkButton(frame, text="Browse…", width=90, command=browse_command).grid(row=row, column=2, padx=10, pady=(10 if row == 0 else 2, 2))
+        entry = ctk.CTkEntry(frame, textvariable=variable, width=350)
+        entry.grid(row=row, column=1, sticky="ew", padx=5, pady=(10 if row == 0 else 2, 2))
+        button = ctk.CTkButton(frame, text="Browse…", width=90, command=browse_command)
+        button.grid(row=row, column=2, padx=10, pady=(10 if row == 0 else 2, 2))
+        self.input_entries.append(entry)
+        self.input_buttons.append(button)
+
+    def _set_inputs_enabled(self, enabled):
+        # Lock or unlock the settings; a disabled CTkEntry looks the same
+        # as an enabled one, so also gray out its text
+        state = "normal" if enabled else "disabled"
+        for entry in self.input_entries:
+            if entry is self.height_entry:
+                continue
+            if not hasattr(entry, "default_text_color"):
+                entry.default_text_color = entry.cget("text_color")
+            entry.configure(state=state, text_color=entry.default_text_color if enabled else DISABLED_TEXT_COLOR)
+        for button in self.input_buttons:
+            if button in self.height_arrows:
+                continue
+            button.configure(state=state)
+
+        # The height field also depends on the "Keep aspect ratio" checkbox
+        if enabled:
+            self._update_height_entry()
+        else:
+            self.height_entry.configure(state="disabled", text_color=DISABLED_TEXT_COLOR)
+            for arrow in self.height_arrows:
+                arrow.configure(state="disabled")
 
     def _browse_raw_videos(self):
         path = filedialog.askdirectory(title="Select raw videos folder")
@@ -309,22 +341,28 @@ class WatermarkApp:
             if height_percent is None:
                 return
 
+        # Validate the watermark opacity
+        opacity_percent = self._parse_percent(self.opacity_var.get(), "Watermark opacity")
+        if opacity_percent is None:
+            return
+
         self.control = RenderControl()
         self.paused = False
         self.processing_status = "Starting…"
         self.run_button.configure(state="disabled")
+        self._set_inputs_enabled(False)
         self.pause_button.configure(state="normal", text="Pause")
         self.stop_button.configure(state="normal")
         self._set_bar(self.progress, 0)
         self._set_bar(self.video_progress, 0)
         self.video_percent_var.set("0%")
-        self.counts_var.set("Processed: 0 / 0")
         self.status_var.set("Starting…")
 
         # Render in a background thread so the window doesn't freeze
         thread = threading.Thread(
             target=self._process,
-            args=(raw_videos_path, output_folder_path, watermark_image_path, self.control, width_percent, height_percent),
+            args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
+                  width_percent, height_percent, opacity_percent),
             daemon=True
         )
         thread.start()
@@ -369,10 +407,12 @@ class WatermarkApp:
         self.control = None
         self.paused = False
         self.run_button.configure(state="normal")
+        self._set_inputs_enabled(True)
         self.pause_button.configure(state="disabled", text="Pause")
         self.stop_button.configure(state="disabled")
 
-    def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control, width_percent, height_percent):
+    def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
+                 width_percent, height_percent, opacity_percent):
         try:
             main(
                 raw_videos_path,
@@ -382,7 +422,8 @@ class WatermarkApp:
                 on_video_progress=self._on_video_progress,
                 control=control,
                 width_percent=width_percent,
-                height_percent=height_percent
+                height_percent=height_percent,
+                opacity_percent=opacity_percent
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)
@@ -398,7 +439,6 @@ class WatermarkApp:
     def _update_progress(self, processed, total, video_file):
         # Avoid division by zero when the folder has no videos
         self._set_bar(self.progress, processed / max(total, 1))
-        self.counts_var.set(f"Processed: {processed} / {total}")
 
         if video_file is not None:
             self._set_bar(self.video_progress, 0)

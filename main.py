@@ -144,11 +144,12 @@ def normalize_audio_clip(audio_clip, target_lufs=-14.0, fps=44100):
 
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar",
-                  width_percent=50, height_percent=None):
+                  width_percent=50, height_percent=None, opacity_percent=33):
     """
     width_percent: watermark width as a percentage of the video width.
     height_percent: watermark height as a percentage of the video height,
         or None to derive it from the width, keeping the image aspect ratio.
+    opacity_percent: watermark opacity, from 0 (invisible) to 100 (opaque).
     """
     # Load the video
     video = VideoFileClip(input_video_path)
@@ -174,8 +175,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     # Pass both sides explicitly: with width= and height= moviepy ignores the width
     watermark = watermark.resized(new_size=(watermark_width, watermark_height))
 
-    # Set the watermark opacity (33%)
-    watermark = watermark.with_opacity(0.33)
+    # Set the watermark opacity
+    watermark = watermark.with_opacity(min(max(opacity_percent, 0), 100) / 100)
 
     # Time it takes for the watermark to travel from top to bottom
     animation_duration = 30  # in seconds
@@ -238,7 +239,7 @@ def remove_partial_files(output_video_path):
 
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
-         width_percent=50, height_percent=None):
+         width_percent=50, height_percent=None, opacity_percent=33):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -272,7 +273,8 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             watermark_image_path,
             logger=logger,
             width_percent=width_percent,
-            height_percent=height_percent
+            height_percent=height_percent,
+            opacity_percent=opacity_percent
         )
         print(f"Video saved: {output_video_path}")
 
