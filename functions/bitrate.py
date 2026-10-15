@@ -1,8 +1,17 @@
+from constants import MIN_AUDIO_BITRATE_KBPS
+
+
 def get_audio_bitrate(video):
-    # Original audio bitrate in kbit/s, or None if unknown
+    # Audio bitrate to encode with in kbit/s: the original one, but not below
+    # MIN_AUDIO_BITRATE_KBPS, or None if unknown.
+    # Low bitrates of efficient codecs (e.g. 32 kbit/s HE-AAC from phones) sound
+    # muffled when re-encoded as regular AAC at the same bitrate
     if video.audio is None:
         return None
-    return video.audio.reader.bitrate or None
+    original = video.audio.reader.bitrate
+    if not original:
+        return None
+    return max(original, MIN_AUDIO_BITRATE_KBPS)
 
 
 def get_video_bitrate(video, audio_bitrate_kbps):

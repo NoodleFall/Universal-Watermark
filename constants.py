@@ -11,6 +11,9 @@ MAX_PERCENT = 100
 # Highest custom video bitrate, in kbit/s (200 Mbit/s)
 MAX_BITRATE_KBPS = 200000
 
+# Lowest audio bitrate, in kbit/s: regular AAC needs about this much for full-range stereo
+MIN_AUDIO_BITRATE_KBPS = 128
+
 # Longest time the watermark may take to travel from the top to the bottom
 MAX_TRAVEL_TIME_SECONDS = 3600
 
@@ -37,6 +40,12 @@ LOUDNESS_PRESETS = {
     "Broadcast EBU R128 (-23 LUFS)": -23.0,
     "Broadcast ATSC A/85 (-24 LUFS)": -24.0,
 }
+
+# Highest peak level after normalization, in dBTP; louder peaks are smoothly limited
+LOUDNESS_TRUE_PEAK_DB = -1.0
+
+# Allowed loudness range, in LU; the maximum keeps the original dynamics untouched
+LOUDNESS_RANGE_LU = 50
 
 # Preset selected by default: -14 LUFS, the level the program has always used
 DEFAULT_LOUDNESS_PRESET = "YouTube / Spotify / Amazon Music / Tidal (-14 LUFS)"

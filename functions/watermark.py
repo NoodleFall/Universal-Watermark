@@ -1,10 +1,10 @@
 import os
 import random
 
-from moviepy import CompositeVideoClip, ImageClip, VideoFileClip
+from moviepy import AudioFileClip, CompositeVideoClip, ImageClip, VideoFileClip
 from moviepy.Clip import Clip
 
-from functions.audio import normalize_audio_clip
+from functions.audio import normalize_audio_file
 from functions.bitrate import get_audio_bitrate, get_video_bitrate
 from functions.render_control import RenderCancelled
 
@@ -23,21 +23,65 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     """
     # Load the video
     video = VideoFileClip(input_video_path)
+    normalized_audio = None
+    # Temporary WAV with the normalized audio, next to the output video.
+    # The name prefix lets remove_partial_files() clean it up too
+    normalized_audio_path = get_temp_file_path(output_video_path, "loudnorm.wav")
+    cancelled = False
 
-    # Bitrates to encode with: the custom video bitrate or the original one,
-    # and always the original audio bitrate (None lets ffmpeg choose)
-    audio_bitrate_kbps = get_audio_bitrate(video)
-    if bitrate_kbps is None:
-        bitrate_kbps = get_video_bitrate(video, audio_bitrate_kbps)
-    print(f"Video bitrate: {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'ffmpeg default'}, "
-          f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
+    try:
+        # Bitrates to encode with: the custom video bitrate or the original one,
+        # and always the original audio bitrate (None lets ffmpeg choose)
+        audio_bitrate_kbps = get_audio_bitrate(video)
+        if bitrate_kbps is None:
+            bitrate_kbps = get_video_bitrate(video, audio_bitrate_kbps)
+        print(f"Video bitrate: {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'ffmpeg default'}, "
+              f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
 
-    # Normalize the audio track, if requested
-    if target_lufs is not None:
-        normalized_audio = normalize_audio_clip(video.audio, target_lufs=target_lufs)
-    else:
-        normalized_audio = None
+        # Normalize the audio track, if requested
+        if target_lufs is not None and video.audio is not None:
+            if normalize_audio_file(input_video_path, normalized_audio_path, target_lufs, video.audio.fps):
+                normalized_audio = AudioFileClip(normalized_audio_path)
 
+        watermark = make_watermark_clip(
+            video, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds
+        )
+
+        # Overlay the watermark on the video
+        final_video = CompositeVideoClip([video, watermark])
+
+        # Use the normalized audio, if available
+        if normalized_audio is not None:
+            final_video = final_video.with_audio(normalized_audio)
+
+        # Save the video with the watermark (and normalized audio, if requested)
+        final_video.write_videofile(
+            output_video_path,
+            codec="libx264",
+            audio_codec="aac",
+            bitrate=f"{max(round(bitrate_kbps), 1)}k" if bitrate_kbps else None,
+            audio_bitrate=f"{audio_bitrate_kbps}k" if audio_bitrate_kbps else None,
+            # Create the temporary audio file next to the output video
+            temp_audiofile_path=os.path.dirname(output_video_path),
+            logger=logger
+        )
+    except RenderCancelled:
+        cancelled = True
+        raise
+    finally:
+        # Stop the ffmpeg processes that read the files; they must be closed
+        # before the files can be removed on Windows
+        video.close()
+        if normalized_audio is not None:
+            normalized_audio.close()
+        if os.path.exists(normalized_audio_path):
+            os.remove(normalized_audio_path)
+        if cancelled:
+            remove_partial_files(output_video_path)
+
+
+def make_watermark_clip(video, watermark_image_path, width_percent, height_percent, opacity_percent,
+                        travel_time_seconds):
     # Load the watermark image
     watermark = ImageClip(watermark_image_path)
 
@@ -79,33 +123,13 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
         return (animate_position.last_x_position, y_position)
 
     # Apply the animation to the watermark
-    watermark = watermark.with_position(animate_position)
+    return watermark.with_position(animate_position)
 
-    # Overlay the watermark on the video
-    final_video = CompositeVideoClip([video, watermark])
 
-    # Use the normalized audio, if available
-    if normalized_audio is not None:
-        final_video = final_video.with_audio(normalized_audio)
-
-    # Save the video with the watermark (and normalized audio, if requested)
-    try:
-        final_video.write_videofile(
-            output_video_path,
-            codec="libx264",
-            audio_codec="aac",
-            bitrate=f"{max(round(bitrate_kbps), 1)}k" if bitrate_kbps else None,
-            audio_bitrate=f"{audio_bitrate_kbps}k" if audio_bitrate_kbps else None,
-            # Create the temporary audio file next to the output video
-            temp_audiofile_path=os.path.dirname(output_video_path),
-            logger=logger
-        )
-    except RenderCancelled:
-        remove_partial_files(output_video_path)
-        raise
-    finally:
-        # Stop the ffmpeg process that reads the source video
-        video.close()
+def get_temp_file_path(output_video_path, suffix):
+    # "<output name>TEMP_MPY_<suffix>" next to the output video, like moviepy's own temporary files
+    name = os.path.splitext(os.path.basename(output_video_path))[0]
+    return os.path.join(os.path.dirname(output_video_path), name + Clip._TEMP_FILES_PREFIX + suffix)
 
 
 def remove_partial_files(output_video_path):
@@ -113,7 +137,7 @@ def remove_partial_files(output_video_path):
     if os.path.exists(output_video_path):
         os.remove(output_video_path)
 
-    # Remove moviepy's temporary audio file, named "<video name>TEMP_MPY_..."
+    # Remove the temporary files, named "<video name>TEMP_MPY_..."
     output_dir = os.path.dirname(output_video_path) or "."
     name = os.path.splitext(os.path.basename(output_video_path))[0]
     for file_name in os.listdir(output_dir):
