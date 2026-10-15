@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from constants import (
+    APP_NAME,
     DISABLED_TEXT_COLOR,
     MAX_PERCENT,
     MAX_TRAVEL_TIME_SECONDS,
@@ -18,7 +19,7 @@ from main import RenderCancelled, RenderControl, main
 def get_settings_path():
     # %APPDATA% on Windows, ~/.config (or $XDG_CONFIG_HOME) elsewhere
     config_dir = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(config_dir, "watermark", "settings.json")
+    return os.path.join(config_dir, APP_NAME, "settings.json")
 
 
 def load_settings():
@@ -71,7 +72,7 @@ def valid_number_or(value, default, max_value):
 class WatermarkApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Watermark")
+        self.root.title(APP_NAME)
         self.root.resizable(True, False)
 
         # Restore the settings from the previous run, falling back to defaults

@@ -1,5 +1,7 @@
 import re
 
+APP_NAME = "Universal Watermark"
+
 # A number with at most 2 decimal places, using "." or "," as the separator;
 # incomplete input like "", "0" or "12." is allowed while typing
 NUMBER_INPUT_RE = re.compile(r"(0|[1-9][0-9]*)?([.,][0-9]{0,2})?")

@@ -1,5 +1,5 @@
 [project]
-name = "watermark"
+name = "universal-watermark"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
