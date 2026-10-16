@@ -11,7 +11,7 @@ from functions.render_control import RenderCancelled
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar",
                   width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
-                  bitrate_kbps=None, target_lufs=-14.0):
+                  bitrate_kbps=None, target_lufs=-14.0, crf=None):
     """
     width_percent: watermark width as a percentage of the video width.
     height_percent: watermark height as a percentage of the video height,
@@ -20,6 +20,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     travel_time_seconds: time for the watermark to travel from the top to the bottom.
     bitrate_kbps: video bitrate in kbit/s, or None to keep the bitrate of the original video.
     target_lufs: loudness to normalize the audio to, or None to keep the original audio.
+    crf: constant quality (lower is better, x264 range 0-51); when set,
+        the encoder picks the bitrate itself and bitrate_kbps is ignored.
     """
     # Load the video
     video = VideoFileClip(input_video_path)
@@ -33,9 +35,15 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
         # Bitrates to encode with: the custom video bitrate or the original one,
         # and always the original audio bitrate (None lets ffmpeg choose)
         audio_bitrate_kbps = get_audio_bitrate(video)
-        if bitrate_kbps is None:
+        if crf is not None:
+            bitrate_kbps = None
+        elif bitrate_kbps is None:
             bitrate_kbps = get_video_bitrate(video, audio_bitrate_kbps)
-        print(f"Video bitrate: {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'ffmpeg default'}, "
+        if crf is not None:
+            video_quality = f"CRF {crf:g}"
+        else:
+            video_quality = f"bitrate {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'ffmpeg default'}"
+        print(f"Video {video_quality}, "
               f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
 
         # Normalize the audio track, if requested
@@ -63,6 +71,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
             audio_bitrate=f"{audio_bitrate_kbps}k" if audio_bitrate_kbps else None,
             # Create the temporary audio file next to the output video
             temp_audiofile_path=os.path.dirname(output_video_path),
+            ffmpeg_params=["-crf", f"{crf:g}"] if crf is not None else None,
             logger=logger
         )
     except RenderCancelled:

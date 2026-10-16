@@ -2,7 +2,14 @@ import json
 import os
 import re
 
-from constants import APP_NAME, DEFAULT_LOUDNESS_PRESET, LOUDNESS_PRESETS
+from constants import (
+    APP_NAME,
+    DEFAULT_LOUDNESS_PRESET,
+    LOUDNESS_PRESETS,
+    QUALITY_CRF,
+    QUALITY_CUSTOM_BITRATE,
+    VIDEO_QUALITY_MODES,
+)
 
 
 def get_settings_path():
@@ -42,3 +49,14 @@ def find_loudness_preset(saved_name):
             if lufs == float(match.group(1)):
                 return name
     return DEFAULT_LOUDNESS_PRESET
+
+
+def find_video_quality_mode(settings):
+    # Saved video quality mode; settings from before the modes existed only have
+    # "original_bitrate": a custom bitrate stays custom, otherwise use the default CRF mode
+    mode = settings.get("video_quality")
+    if mode in VIDEO_QUALITY_MODES:
+        return mode
+    if settings.get("original_bitrate") is False:
+        return QUALITY_CUSTOM_BITRATE
+    return QUALITY_CRF

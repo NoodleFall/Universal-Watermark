@@ -9,15 +9,21 @@ from constants import (
     DISABLED_TEXT_COLOR,
     LOUDNESS_PRESETS,
     MAX_BITRATE_KBPS,
+    MAX_CRF,
     MAX_PERCENT,
     MAX_TRAVEL_TIME_SECONDS,
     NUMBER_INPUT_RE,
     NUMBER_STEP,
+    QUALITY_CRF,
+    QUALITY_CUSTOM_BITRATE,
+    QUALITY_ORIGINAL_BITRATE,
+    RECOMMENDED_CRF,
+    VIDEO_QUALITY_MODES,
 )
 from functions.render_control import RenderCancelled, RenderControl
 from main import main
 from number_input import format_number, is_number_input, parse_number, valid_number_or
-from settings import find_loudness_preset, load_settings, save_settings
+from settings import find_loudness_preset, find_video_quality_mode, load_settings, save_settings
 
 
 class WatermarkApp:
@@ -38,15 +44,18 @@ class WatermarkApp:
         self.travel_time_var = ctk.StringVar(
             value=valid_number_or(settings.get("travel_time_seconds"), "30", MAX_TRAVEL_TIME_SECONDS)
         )
+        self.video_quality_var = ctk.StringVar(value=find_video_quality_mode(settings))
+        self.crf_var = ctk.StringVar(value=valid_number_or(settings.get("crf"), str(RECOMMENDED_CRF), MAX_CRF))
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
-        self.original_bitrate_var = ctk.BooleanVar(value=bool(settings.get("original_bitrate", True)))
+        # Shows "original" in the bitrate field; set from the video quality mode
+        self.original_bitrate_var = ctk.BooleanVar()
         self.normalize_audio_var = ctk.BooleanVar(value=bool(settings.get("normalize_audio", False)))
         self.loudness_preset_var = ctk.StringVar(value=find_loudness_preset(settings.get("loudness_preset")))
 
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
-                    self.travel_time_var, self.bitrate_var, self.original_bitrate_var,
+                    self.travel_time_var, self.video_quality_var, self.crf_var, self.bitrate_var,
                     self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
 
@@ -101,19 +110,40 @@ class WatermarkApp:
             text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
         ).grid(row=0, column=2, padx=(5, 0))
 
-        # Video bitrate: the bitrate of each original video, or a custom one
-        ctk.CTkLabel(frame, text="Video bitrate:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
-        bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
-        bitrate_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_auto_field(
-            bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
-            self.original_bitrate_var, "Same as original", "original"
+        # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
+        ctk.CTkLabel(frame, text="Video quality:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        quality_menu = ctk.CTkOptionMenu(
+            frame,
+            variable=self.video_quality_var,
+            values=list(VIDEO_QUALITY_MODES),
+            width=220,
+            command=lambda mode: self._update_quality_fields()
         )
+        quality_menu.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.input_buttons.append(quality_menu)
+
+        # Value of the chosen quality mode: the CRF or the bitrate field, in the same place
+        self.quality_value_label_var = ctk.StringVar()
+        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        self.crf_row = ctk.CTkFrame(frame, fg_color="transparent")
+        self.crf_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_number_field(self.crf_row, self.crf_var, MAX_CRF)
+        ctk.CTkLabel(
+            self.crf_row,
+            text=f"lower = better quality, {RECOMMENDED_CRF} recommended (max: {MAX_CRF})"
+        ).grid(row=0, column=2, padx=(5, 0))
+        self.bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
+        self.bitrate_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.bitrate_field = self._add_auto_field(
+            self.bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
+            self.original_bitrate_var, None, "original"
+        )
+        self._update_quality_fields()
 
         # Audio normalization: off, or a loudness preset of a platform or standard
-        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
         loudness_row = ctk.CTkFrame(frame, fg_color="transparent")
-        loudness_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        loudness_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         normalize_checkbox = ctk.CTkCheckBox(
             loudness_row,
             text="Normalize",
@@ -132,7 +162,7 @@ class WatermarkApp:
         self._update_loudness_menu()
 
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=9, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=10, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -149,19 +179,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=10, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=10, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=11, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=11, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=12, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=11, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=12, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=12, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=13, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
     def _save_settings(self, *args):
         save_settings({
@@ -173,8 +203,9 @@ class WatermarkApp:
             "keep_aspect_ratio": self.keep_ratio_var.get(),
             "opacity_percent": self.opacity_var.get(),
             "travel_time_seconds": self.travel_time_var.get(),
+            "video_quality": self.video_quality_var.get(),
+            "crf": self.crf_var.get(),
             "bitrate_kbps": self.bitrate_var.get(),
-            "original_bitrate": self.original_bitrate_var.get(),
             "normalize_audio": self.normalize_audio_var.get(),
             "loudness_preset": self.loudness_preset_var.get(),
         })
@@ -235,8 +266,9 @@ class WatermarkApp:
         variable.set(format_number(min(new, max_value)))
 
     def _add_auto_field(self, parent, variable, max_value, label, auto_var, checkbox_text, auto_text):
-        # Number field with a checkbox that switches it to an automatic value,
-        # e.g. the height kept from the aspect ratio or the original bitrate
+        # Number field that auto_var switches to an automatic value, e.g. the height kept
+        # from the aspect ratio or the original bitrate. With checkbox_text, a checkbox
+        # controls auto_var; without it, the caller sets auto_var and calls _update_auto_field()
         entry, arrows = self._add_number_field(parent, variable, max_value)
         ctk.CTkLabel(parent, text=label).grid(row=0, column=2, padx=(5, 0))
         field = {
@@ -248,16 +280,33 @@ class WatermarkApp:
             "auto_text_var": ctk.StringVar(value=auto_text),
             "text_color": entry.cget("text_color"),
         }
-        checkbox = ctk.CTkCheckBox(
-            parent,
-            text=checkbox_text,
-            variable=auto_var,
-            command=lambda: self._update_auto_field(field)
-        )
-        checkbox.grid(row=0, column=3, padx=(20, 0))
-        self.input_buttons.append(checkbox)
+        if checkbox_text is not None:
+            checkbox = ctk.CTkCheckBox(
+                parent,
+                text=checkbox_text,
+                variable=auto_var,
+                command=lambda: self._update_auto_field(field)
+            )
+            checkbox.grid(row=0, column=3, padx=(20, 0))
+            self.input_buttons.append(checkbox)
         self.auto_fields.append(field)
         self._update_auto_field(field)
+        return field
+
+    def _update_quality_fields(self):
+        # Show the CRF field for constant quality, otherwise the bitrate field,
+        # which shows "original" in the "Same bitrate as original" mode
+        mode = self.video_quality_var.get()
+        if mode == QUALITY_CRF:
+            self.quality_value_label_var.set("Quality (CRF):")
+            self.bitrate_row.grid_remove()
+            self.crf_row.grid()
+        else:
+            self.quality_value_label_var.set("Video bitrate:")
+            self.crf_row.grid_remove()
+            self.bitrate_row.grid()
+            self.original_bitrate_var.set(mode == QUALITY_ORIGINAL_BITRATE)
+            self._update_auto_field(self.bitrate_field)
 
     def _update_auto_field(self, field):
         # The custom value is only used when the checkbox is off.
@@ -390,10 +439,15 @@ class WatermarkApp:
         if travel_time_seconds is None:
             return
 
-        # Validate the video bitrate; None keeps the bitrate of each original video
-        if self.original_bitrate_var.get():
-            bitrate_kbps = None
-        else:
+        # Validate the video quality: a CRF, or a bitrate (None keeps the bitrate of each original video)
+        mode = self.video_quality_var.get()
+        crf = None
+        bitrate_kbps = None
+        if mode == QUALITY_CRF:
+            crf = self._parse_number(self.crf_var.get(), "Quality (CRF)", MAX_CRF)
+            if crf is None:
+                return
+        elif mode == QUALITY_CUSTOM_BITRATE:
             bitrate_kbps = self._parse_number(self.bitrate_var.get(), "Video bitrate", MAX_BITRATE_KBPS)
             if bitrate_kbps is None:
                 return
@@ -420,7 +474,7 @@ class WatermarkApp:
         thread = threading.Thread(
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
-                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs),
+                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf),
             daemon=True
         )
         thread.start()
@@ -470,7 +524,7 @@ class WatermarkApp:
         self.stop_button.configure(state="disabled")
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs):
+                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf):
         try:
             main(
                 raw_videos_path,
@@ -484,7 +538,8 @@ class WatermarkApp:
                 opacity_percent=opacity_percent,
                 travel_time_seconds=travel_time_seconds,
                 bitrate_kbps=bitrate_kbps,
-                target_lufs=target_lufs
+                target_lufs=target_lufs,
+                crf=crf
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)

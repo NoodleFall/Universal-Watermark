@@ -8,6 +8,16 @@ NUMBER_INPUT_RE = re.compile(r"(0|[1-9][0-9]*)?([.,][0-9]{0,2})?")
 
 MAX_PERCENT = 100
 
+# Video quality modes: constant quality (CRF), the bitrate of the original, or a custom bitrate
+QUALITY_CRF = "Same quality (CRF)"
+QUALITY_ORIGINAL_BITRATE = "Same bitrate as original"
+QUALITY_CUSTOM_BITRATE = "Custom bitrate"
+VIDEO_QUALITY_MODES = (QUALITY_CRF, QUALITY_ORIGINAL_BITRATE, QUALITY_CUSTOM_BITRATE)
+
+# CRF: lower is better quality and bigger files; 20 is barely distinguishable from the original
+RECOMMENDED_CRF = 20
+MAX_CRF = 51
+
 # Highest custom video bitrate, in kbit/s (200 Mbit/s)
 MAX_BITRATE_KBPS = 200000
 

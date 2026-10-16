@@ -17,7 +17,7 @@ def get_output_video_path(output_folder_path, video_file, video_files):
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
          width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30, bitrate_kbps=None,
-         target_lufs=-14.0):
+         target_lufs=-14.0, crf=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -55,7 +55,8 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             opacity_percent=opacity_percent,
             travel_time_seconds=travel_time_seconds,
             bitrate_kbps=bitrate_kbps,
-            target_lufs=target_lufs
+            target_lufs=target_lufs,
+            crf=crf
         )
         print(f"Video saved: {output_video_path}")
 
