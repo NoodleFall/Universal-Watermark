@@ -45,6 +45,18 @@ VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv", ".f
 # Containers that can't hold H.264 video with AAC audio are saved with another extension
 OUTPUT_EXTENSION_OVERRIDES = {".webm": ".mp4"}
 
+# Video codecs to encode with
+CODEC_H264 = "H.264 (most compatible)"
+CODEC_HEVC = "HEVC / H.265 (smaller files)"
+CODEC_AV1 = "AV1 (smallest files, slow on CPU)"
+VIDEO_CODECS = (CODEC_H264, CODEC_HEVC, CODEC_AV1)
+
+# Containers that can hold HEVC and AV1 video with AAC audio; other videos are saved as .mp4
+CODEC_CONTAINERS = {
+    CODEC_HEVC: (".mp4", ".mkv", ".mov", ".m4v", ".ts"),
+    CODEC_AV1: (".mp4", ".mkv", ".mov", ".m4v"),
+}
+
 # Audio normalization targets of popular platforms and standards, in LUFS
 # (platforms with the same target share one preset)
 LOUDNESS_PRESETS = {

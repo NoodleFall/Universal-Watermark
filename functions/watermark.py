@@ -1,20 +1,19 @@
 import os
 import random
 
-from moviepy.config import FFMPEG_BINARY
 from PIL import Image
 
-from constants import POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
+from constants import CODEC_H264, CODEC_HEVC, POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
 from functions.audio import normalize_audio_file
 from functions.bitrate import get_audio_bitrate, get_video_bitrate
-from functions.encoders import CPU_ENCODER, find_gpu_encoder, get_encoder_args, get_filter_tail, get_input_args
+from functions.encoders import find_cpu_encoder, find_gpu_encoder, get_encoder_args, get_filter_tail, get_input_args
 from functions.ffmpeg_runner import FfmpegError, run_ffmpeg
 from functions.video_info import get_video_info
 
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path,
                   width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
-                  bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False,
+                  bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264,
                   control=None, on_progress=None):
     """
     Renders the video with a moving watermark in one ffmpeg run.
@@ -29,6 +28,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
     crf: constant quality (lower is better, x264 range 0-51); when set,
         the encoder picks the bitrate itself and bitrate_kbps is ignored.
     use_gpu: encode with the video card, if one is found; otherwise the CPU is used.
+    codec: one of VIDEO_CODECS.
     control: RenderControl to pause or stop rendering.
     on_progress: called with the rendering progress of this video in whole percent.
     """
@@ -40,16 +40,19 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
     if crf is None and bitrate_kbps is None:
         bitrate_kbps = get_video_bitrate(info)
 
-    # Encoders to try: the video card, if requested and available, then x264 on the CPU.
+    # Encoders to try: the video card, if requested and available, then the CPU.
     # Video cards have limits (e.g. the largest frame size), so a video they
     # can't encode is rendered on the CPU instead
-    encoders = [(FFMPEG_BINARY, CPU_ENCODER)]
+    cpu_encoder = find_cpu_encoder(codec)
+    if cpu_encoder is None:
+        raise FfmpegError(f"No working {codec} encoder was found in ffmpeg")
+    encoders = [cpu_encoder]
     if use_gpu:
-        gpu_encoder = find_gpu_encoder()
+        gpu_encoder = find_gpu_encoder(codec)
         if gpu_encoder is not None:
             encoders.insert(0, gpu_encoder)
         else:
-            print("No supported video card encoder found, using the CPU")
+            print(f"No video card encoder for {codec} found, using the CPU")
 
     if crf is not None:
         video_quality = f"CRF {crf:g}"
@@ -85,13 +88,14 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
                 "-map", "[video]",
                 *get_audio_args(info, use_normalized_audio, audio_bitrate_kbps),
                 *get_encoder_args(encoder, crf, bitrate_kbps),
+                *get_codec_tag_args(codec, output_video_path),
                 output_video_path,
             ]
             try:
                 run_ffmpeg(binary, args, control, info["duration"], on_progress)
                 break
             except FfmpegError as e:
-                if encoder == CPU_ENCODER:
+                if (binary, encoder) == cpu_encoder:
                     raise
                 print(f"The video card couldn't encode this video, rendering it on the CPU instead:\n{e}")
                 if os.path.exists(output_video_path):
@@ -140,6 +144,13 @@ def get_watermark_size(info, watermark_image_path, width_percent, height_percent
     # Don't let the watermark be empty or larger than the video
     watermark_height = min(max(1, watermark_height), info["height"])
     return watermark_width, watermark_height
+
+
+def get_codec_tag_args(codec, output_video_path):
+    # Apple devices only play HEVC in MP4/MOV when it's tagged "hvc1" instead of ffmpeg's "hev1"
+    if codec == CODEC_HEVC and output_video_path.lower().endswith((".mp4", ".mov", ".m4v")):
+        return ["-tag:v", "hvc1"]
+    return []
 
 
 def get_audio_args(info, use_normalized_audio, audio_bitrate_kbps):

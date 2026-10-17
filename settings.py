@@ -4,10 +4,12 @@ import re
 
 from constants import (
     APP_NAME,
+    CODEC_H264,
     DEFAULT_LOUDNESS_PRESET,
     LOUDNESS_PRESETS,
     QUALITY_CRF,
     QUALITY_CUSTOM_BITRATE,
+    VIDEO_CODECS,
     VIDEO_QUALITY_MODES,
 )
 
@@ -60,3 +62,8 @@ def find_video_quality_mode(settings):
     if settings.get("original_bitrate") is False:
         return QUALITY_CUSTOM_BITRATE
     return QUALITY_CRF
+
+
+def find_codec(saved_codec):
+    # Saved video codec, or H.264 if none was saved yet
+    return saved_codec if saved_codec in VIDEO_CODECS else CODEC_H264

@@ -18,13 +18,14 @@ from constants import (
     QUALITY_CUSTOM_BITRATE,
     QUALITY_ORIGINAL_BITRATE,
     RECOMMENDED_CRF,
+    VIDEO_CODECS,
     VIDEO_QUALITY_MODES,
 )
-from functions.encoders import find_gpu_encoder
+from functions.encoders import find_cpu_encoder, find_gpu_encoder
 from functions.render_control import RenderCancelled, RenderControl
 from main import main
 from number_input import format_number, is_number_input, parse_number, valid_number_or
-from settings import find_loudness_preset, find_video_quality_mode, load_settings, save_settings
+from settings import find_codec, find_loudness_preset, find_video_quality_mode, load_settings, save_settings
 
 
 class WatermarkApp:
@@ -50,6 +51,7 @@ class WatermarkApp:
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
         # Shows "original" in the bitrate field; set from the video quality mode
         self.original_bitrate_var = ctk.BooleanVar()
+        self.codec_var = ctk.StringVar(value=find_codec(settings.get("video_codec")))
         self.use_gpu_var = ctk.BooleanVar(value=bool(settings.get("use_gpu", False)))
         self.normalize_audio_var = ctk.BooleanVar(value=bool(settings.get("normalize_audio", False)))
         self.loudness_preset_var = ctk.StringVar(value=find_loudness_preset(settings.get("loudness_preset")))
@@ -58,7 +60,7 @@ class WatermarkApp:
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
                     self.travel_time_var, self.video_quality_var, self.crf_var, self.bitrate_var,
-                    self.use_gpu_var, self.normalize_audio_var, self.loudness_preset_var):
+                    self.codec_var, self.use_gpu_var, self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
 
         self.status_var = ctk.StringVar(value="Ready")
@@ -112,23 +114,23 @@ class WatermarkApp:
             text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
         ).grid(row=0, column=2, padx=(5, 0))
 
-        # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
-        ctk.CTkLabel(frame, text="Video quality:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
-        quality_row = ctk.CTkFrame(frame, fg_color="transparent")
-        quality_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        quality_menu = ctk.CTkOptionMenu(
-            quality_row,
-            variable=self.video_quality_var,
-            values=list(VIDEO_QUALITY_MODES),
-            width=220,
-            command=lambda mode: self._update_quality_fields()
+        # Video codec: H.264, HEVC or AV1
+        ctk.CTkLabel(frame, text="Video codec:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        codec_row = ctk.CTkFrame(frame, fg_color="transparent")
+        codec_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        codec_menu = ctk.CTkOptionMenu(
+            codec_row,
+            variable=self.codec_var,
+            values=list(VIDEO_CODECS),
+            width=260,
+            command=lambda codec: self._check_gpu()
         )
-        quality_menu.grid(row=0, column=0)
-        self.input_buttons.append(quality_menu)
+        codec_menu.grid(row=0, column=0)
+        self.input_buttons.append(codec_menu)
 
         # Encode with the video card: faster, but usually bigger files for the same quality
         gpu_checkbox = ctk.CTkCheckBox(
-            quality_row,
+            codec_row,
             text="Use GPU (faster, bigger files)",
             variable=self.use_gpu_var,
             command=self._check_gpu
@@ -136,18 +138,30 @@ class WatermarkApp:
         gpu_checkbox.grid(row=0, column=1, padx=(20, 0))
         self.input_buttons.append(gpu_checkbox)
 
+        # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
+        ctk.CTkLabel(frame, text="Video quality:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        quality_menu = ctk.CTkOptionMenu(
+            frame,
+            variable=self.video_quality_var,
+            values=list(VIDEO_QUALITY_MODES),
+            width=220,
+            command=lambda mode: self._update_quality_fields()
+        )
+        quality_menu.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.input_buttons.append(quality_menu)
+
         # Value of the chosen quality mode: the CRF or the bitrate field, in the same place
         self.quality_value_label_var = ctk.StringVar()
-        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=9, column=0, sticky="w", padx=10, pady=2)
         self.crf_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.crf_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.crf_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.crf_row, self.crf_var, MAX_CRF)
         ctk.CTkLabel(
             self.crf_row,
             text=f"lower = better quality, {RECOMMENDED_CRF} recommended (max: {MAX_CRF})"
         ).grid(row=0, column=2, padx=(5, 0))
         self.bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.bitrate_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.bitrate_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.bitrate_field = self._add_auto_field(
             self.bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
             self.original_bitrate_var, None, "original"
@@ -155,9 +169,9 @@ class WatermarkApp:
         self._update_quality_fields()
 
         # Audio normalization: off, or a loudness preset of a platform or standard
-        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
         loudness_row = ctk.CTkFrame(frame, fg_color="transparent")
-        loudness_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        loudness_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         normalize_checkbox = ctk.CTkCheckBox(
             loudness_row,
             text="Normalize",
@@ -176,7 +190,7 @@ class WatermarkApp:
         self._update_loudness_menu()
 
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=10, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=11, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -193,19 +207,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=12, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=11, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=11, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=12, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=12, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=12, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=13, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=12, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=13, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=13, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=14, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
     def _save_settings(self, *args):
         save_settings({
@@ -222,6 +236,7 @@ class WatermarkApp:
             "bitrate_kbps": self.bitrate_var.get(),
             "normalize_audio": self.normalize_audio_var.get(),
             "loudness_preset": self.loudness_preset_var.get(),
+            "video_codec": self.codec_var.get(),
             "use_gpu": self.use_gpu_var.get(),
         })
 
@@ -399,22 +414,32 @@ class WatermarkApp:
             self.loudness_menu.configure(state="disabled")
 
     def _check_gpu(self):
-        # When "Use GPU" is turned on, make sure a video card encoder actually works
-        if not self.use_gpu_var.get():
-            return
-        self.status_var.set("Checking the video card…")
+        # Show which encoder the chosen codec will use; when "Use GPU" is on,
+        # make sure a video card encoder actually works. The checks are cached
+        codec = self.codec_var.get()
+        self.status_var.set("Checking the encoders…")
         self.root.update_idletasks()
-        gpu_encoder = find_gpu_encoder()
-        if gpu_encoder is None:
+
+        cpu_encoder = find_cpu_encoder(codec)
+        cpu_status = f"CPU encoder: {cpu_encoder[1]}" if cpu_encoder else f"No {codec} encoder found"
+        if not self.use_gpu_var.get():
+            self.status_var.set(cpu_status)
+            return
+
+        gpu_encoder = find_gpu_encoder(codec)
+        if gpu_encoder is not None:
+            self.status_var.set(f"Video card encoder: {gpu_encoder[1]}")
+        elif any(find_gpu_encoder(other) for other in VIDEO_CODECS if other != codec):
+            # The video card works, just not with this codec: keep "Use GPU" for the other codecs
+            self.status_var.set(f"The video card can't encode this codec, so the CPU is used. {cpu_status}")
+        else:
             self.use_gpu_var.set(False)
-            self.status_var.set("Ready")
+            self.status_var.set(cpu_status)
             messagebox.showinfo(
                 "Use GPU",
                 "No supported video card encoder was found, so the CPU will be used.\n\n"
                 "Supported: NVIDIA (NVENC), Intel (Quick Sync), AMD (AMF on Windows, VAAPI on Linux)."
             )
-        else:
-            self.status_var.set(f"Video card encoder: {gpu_encoder[1]}")
 
     def _update_loudness_menu(self):
         # A preset can only be chosen while normalization is on
@@ -508,7 +533,7 @@ class WatermarkApp:
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
                   width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf,
-                  self.use_gpu_var.get()),
+                  self.use_gpu_var.get(), self.codec_var.get()),
             daemon=True
         )
         thread.start()
@@ -558,7 +583,8 @@ class WatermarkApp:
         self.stop_button.configure(state="disabled")
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf, use_gpu):
+                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf,
+                 use_gpu, codec):
         try:
             main(
                 raw_videos_path,
@@ -574,7 +600,8 @@ class WatermarkApp:
                 bitrate_kbps=bitrate_kbps,
                 target_lufs=target_lufs,
                 crf=crf,
-                use_gpu=use_gpu
+                use_gpu=use_gpu,
+                codec=codec
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)
