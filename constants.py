@@ -13,10 +13,15 @@ QUALITY_CRF = "Same quality (CRF)"
 QUALITY_ORIGINAL_BITRATE = "Same bitrate as original"
 QUALITY_CUSTOM_BITRATE = "Custom bitrate"
 VIDEO_QUALITY_MODES = (QUALITY_CRF, QUALITY_ORIGINAL_BITRATE, QUALITY_CUSTOM_BITRATE)
+# Name of QUALITY_CRF in the menu while a video card encodes: they have a QP instead of a CRF
+QUALITY_GPU_QP = "Same quality (QP)"
 
 # CRF: lower is better quality and bigger files; 23 is x264's default balance of quality and size
 RECOMMENDED_CRF = 23
 MAX_CRF = 51
+
+# Highest QP of video card encoders: 51 for H.264 and HEVC, 255 for the AV1 quality index
+MAX_GPU_QP = 255
 
 # Highest custom video bitrate, in kbit/s (200 Mbit/s)
 MAX_BITRATE_KBPS = 200000

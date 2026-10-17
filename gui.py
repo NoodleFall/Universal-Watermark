@@ -10,18 +10,20 @@ from constants import (
     LOUDNESS_PRESETS,
     MAX_BITRATE_KBPS,
     MAX_CRF,
+    MAX_GPU_QP,
     MAX_PERCENT,
     MAX_TRAVEL_TIME_SECONDS,
     NUMBER_INPUT_RE,
     NUMBER_STEP,
     QUALITY_CRF,
     QUALITY_CUSTOM_BITRATE,
+    QUALITY_GPU_QP,
     QUALITY_ORIGINAL_BITRATE,
     RECOMMENDED_CRF,
     VIDEO_CODECS,
     VIDEO_QUALITY_MODES,
 )
-from functions.encoders import find_cpu_encoder, find_gpu_encoder
+from functions.encoders import find_cpu_encoder, find_gpu_encoder, get_gpu_qp_scale
 from functions.render_control import RenderCancelled, RenderControl
 from main import main
 from number_input import format_number, is_number_input, parse_number, valid_number_or
@@ -49,6 +51,12 @@ class WatermarkApp:
         self.video_quality_var = ctk.StringVar(value=find_video_quality_mode(settings))
         self.crf_var = ctk.StringVar(value=valid_number_or(settings.get("crf"), str(RECOMMENDED_CRF), MAX_CRF))
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
+        # QP of the video card encoder on its own scale, and the encoder it was set for
+        self.gpu_qp_var = ctk.StringVar(value=valid_number_or(settings.get("gpu_qp"), "", MAX_GPU_QP))
+        self.gpu_qp_encoder_var = ctk.StringVar(value=settings.get("gpu_qp_encoder", ""))
+        # Video card encoder used for the chosen codec, or None; set by _check_gpu()
+        self.gpu_encoder = None
+        self.gpu_qp_max = MAX_GPU_QP
         # Shows "original" in the bitrate field; set from the video quality mode
         self.original_bitrate_var = ctk.BooleanVar()
         self.codec_var = ctk.StringVar(value=find_codec(settings.get("video_codec")))
@@ -60,6 +68,7 @@ class WatermarkApp:
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
                     self.travel_time_var, self.video_quality_var, self.crf_var, self.bitrate_var,
+                    self.gpu_qp_var, self.gpu_qp_encoder_var,
                     self.codec_var, self.use_gpu_var, self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
 
@@ -140,15 +149,16 @@ class WatermarkApp:
 
         # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
         ctk.CTkLabel(frame, text="Video quality:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
-        quality_menu = ctk.CTkOptionMenu(
+        # The menu shows display names: the constant quality mode reads "(QP)" while a video
+        # card encodes; video_quality_var keeps the mode itself, as saved in the settings
+        self.quality_menu = ctk.CTkOptionMenu(
             frame,
-            variable=self.video_quality_var,
             values=list(VIDEO_QUALITY_MODES),
             width=220,
-            command=lambda mode: self._update_quality_fields()
+            command=self._select_quality_mode
         )
-        quality_menu.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self.input_buttons.append(quality_menu)
+        self.quality_menu.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.input_buttons.append(self.quality_menu)
 
         # Value of the chosen quality mode: the CRF or the bitrate field, in the same place
         self.quality_value_label_var = ctk.StringVar()
@@ -160,6 +170,13 @@ class WatermarkApp:
             self.crf_row,
             text=f"lower = better quality, {RECOMMENDED_CRF} recommended (max: {MAX_CRF})"
         ).grid(row=0, column=2, padx=(5, 0))
+        # QP of the video card, shown instead of the CRF when it encodes the video;
+        # its highest value depends on the encoder
+        self.gpu_qp_row = ctk.CTkFrame(frame, fg_color="transparent")
+        self.gpu_qp_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_number_field(self.gpu_qp_row, self.gpu_qp_var, lambda: self.gpu_qp_max)
+        self.gpu_qp_hint_var = ctk.StringVar()
+        ctk.CTkLabel(self.gpu_qp_row, textvariable=self.gpu_qp_hint_var).grid(row=0, column=2, padx=(5, 0))
         self.bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
         self.bitrate_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.bitrate_field = self._add_auto_field(
@@ -221,6 +238,10 @@ class WatermarkApp:
 
         ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=14, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
+        # Find the video card encoder right away if "Use GPU" was on last time, to show its QP field
+        if self.use_gpu_var.get():
+            self._check_gpu()
+
     def _save_settings(self, *args):
         save_settings({
             "raw_videos_path": self.raw_videos_var.get(),
@@ -233,6 +254,8 @@ class WatermarkApp:
             "travel_time_seconds": self.travel_time_var.get(),
             "video_quality": self.video_quality_var.get(),
             "crf": self.crf_var.get(),
+            "gpu_qp": self.gpu_qp_var.get(),
+            "gpu_qp_encoder": self.gpu_qp_encoder_var.get(),
             "bitrate_kbps": self.bitrate_var.get(),
             "normalize_audio": self.normalize_audio_var.get(),
             "loudness_preset": self.loudness_preset_var.get(),
@@ -241,7 +264,8 @@ class WatermarkApp:
         })
 
     def _add_number_field(self, parent, variable, max_value):
-        # Entry for a number up to max_value with ▲/▼ buttons; returns the entry and the buttons
+        # Entry for a number up to max_value (a number, or a function returning it)
+        # with ▲/▼ buttons; returns the entry and the buttons
         entry = ctk.CTkEntry(
             parent,
             textvariable=variable,
@@ -277,6 +301,7 @@ class WatermarkApp:
     def _validate_number(self, variable, value, max_value):
         if not NUMBER_INPUT_RE.fullmatch(value):
             return False
+        max_value = max_value() if callable(max_value) else max_value
         number = parse_number(value)
         if number is not None and number > max_value:
             # Too large: reset the field to the maximum. Changing the variable inside
@@ -288,6 +313,7 @@ class WatermarkApp:
     def _step_number(self, entry, variable, max_value, direction):
         if entry.cget("state") == "disabled":
             return
+        max_value = max_value() if callable(max_value) else max_value
         current = parse_number(variable.get()) or 0
         new = round(current + direction * NUMBER_STEP, 2)
         # Stay within (0, max_value]: going below zero keeps the current value
@@ -323,17 +349,34 @@ class WatermarkApp:
         self._update_auto_field(field)
         return field
 
+    def _get_quality_mode_name(self, mode):
+        # Name of the mode in the menu: constant quality is a QP on video cards
+        return QUALITY_GPU_QP if mode == QUALITY_CRF and self.gpu_encoder is not None else mode
+
+    def _select_quality_mode(self, name):
+        self.video_quality_var.set(QUALITY_CRF if name == QUALITY_GPU_QP else name)
+        self._update_quality_fields()
+
     def _update_quality_fields(self):
-        # Show the CRF field for constant quality, otherwise the bitrate field,
-        # which shows "original" in the "Same bitrate as original" mode
+        # Show the CRF field for constant quality (the QP field when a video card encodes),
+        # otherwise the bitrate field, which shows "original" in the "Same bitrate as original" mode
         mode = self.video_quality_var.get()
-        if mode == QUALITY_CRF:
+        self.quality_menu.configure(values=[self._get_quality_mode_name(m) for m in VIDEO_QUALITY_MODES])
+        self.quality_menu.set(self._get_quality_mode_name(mode))
+        if mode == QUALITY_CRF and self.gpu_encoder is not None:
+            self.quality_value_label_var.set("Quality (QP):")
+            self.bitrate_row.grid_remove()
+            self.crf_row.grid_remove()
+            self.gpu_qp_row.grid()
+        elif mode == QUALITY_CRF:
             self.quality_value_label_var.set("Quality (CRF):")
             self.bitrate_row.grid_remove()
+            self.gpu_qp_row.grid_remove()
             self.crf_row.grid()
         else:
             self.quality_value_label_var.set("Video bitrate:")
             self.crf_row.grid_remove()
+            self.gpu_qp_row.grid_remove()
             self.bitrate_row.grid()
             self.original_bitrate_var.set(mode == QUALITY_ORIGINAL_BITRATE)
             self._update_auto_field(self.bitrate_field)
@@ -424,9 +467,11 @@ class WatermarkApp:
         cpu_status = f"CPU encoder: {cpu_encoder[1]}" if cpu_encoder else f"No {codec} encoder found"
         if not self.use_gpu_var.get():
             self.status_var.set(cpu_status)
+            self._set_gpu_encoder(None)
             return
 
         gpu_encoder = find_gpu_encoder(codec)
+        self._set_gpu_encoder(gpu_encoder[1] if gpu_encoder is not None else None)
         if gpu_encoder is not None:
             self.status_var.set(f"Video card encoder: {gpu_encoder[1]}")
         elif any(find_gpu_encoder(other) for other in VIDEO_CODECS if other != codec):
@@ -440,6 +485,20 @@ class WatermarkApp:
                 "No supported video card encoder was found, so the CPU will be used.\n\n"
                 "Supported: NVIDIA (NVENC), Intel (Quick Sync), AMD (AMF on Windows, VAAPI on Linux)."
             )
+
+    def _set_gpu_encoder(self, encoder):
+        # Set up the QP field for the video card encoder, or hide it for None
+        self.gpu_encoder = encoder
+        if encoder is not None:
+            recommended, self.gpu_qp_max = get_gpu_qp_scale(encoder)
+            # Encoders have different scales, so a QP set for another one means nothing here
+            if self.gpu_qp_encoder_var.get() != encoder or not self.gpu_qp_var.get():
+                self.gpu_qp_var.set(str(recommended))
+                self.gpu_qp_encoder_var.set(encoder)
+            self.gpu_qp_hint_var.set(
+                f"{encoder} scale, lower = better quality, {recommended} recommended (max: {self.gpu_qp_max})"
+            )
+        self._update_quality_fields()
 
     def _update_loudness_menu(self):
         # A preset can only be chosen while normalization is on
@@ -500,11 +559,17 @@ class WatermarkApp:
         # Validate the video quality: a CRF, or a bitrate (None keeps the bitrate of each original video)
         mode = self.video_quality_var.get()
         crf = None
+        qp = None
         bitrate_kbps = None
         if mode == QUALITY_CRF:
+            # The CRF is also needed with a video card: the CPU takes over the videos it can't encode
             crf = self._parse_number(self.crf_var.get(), "Quality (CRF)", MAX_CRF)
             if crf is None:
                 return
+            if self.gpu_encoder is not None:
+                qp = self._parse_number(self.gpu_qp_var.get(), "Quality (QP)", self.gpu_qp_max)
+                if qp is None:
+                    return
         elif mode == QUALITY_CUSTOM_BITRATE:
             bitrate_kbps = self._parse_number(self.bitrate_var.get(), "Video bitrate", MAX_BITRATE_KBPS)
             if bitrate_kbps is None:
@@ -533,7 +598,7 @@ class WatermarkApp:
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
                   width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf,
-                  self.use_gpu_var.get(), self.codec_var.get()),
+                  self.use_gpu_var.get(), self.codec_var.get(), qp),
             daemon=True
         )
         thread.start()
@@ -584,7 +649,7 @@ class WatermarkApp:
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf,
-                 use_gpu, codec):
+                 use_gpu, codec, qp):
         try:
             main(
                 raw_videos_path,
@@ -601,7 +666,8 @@ class WatermarkApp:
                 target_lufs=target_lufs,
                 crf=crf,
                 use_gpu=use_gpu,
-                codec=codec
+                codec=codec,
+                qp=qp
             )
         except RenderCancelled:
             self.root.after(0, self._on_cancelled)

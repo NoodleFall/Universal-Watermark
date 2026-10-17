@@ -105,11 +105,13 @@ def get_filter_tail(encoder):
     return "format=nv12"
 
 
-def get_encoder_args(encoder, crf, bitrate_kbps):
+def get_encoder_args(encoder, crf, bitrate_kbps, qp=None):
     """
     Video encoder options. crf: constant quality on the H.264 (x264) scale, lower is
     better; bitrate_kbps: target bitrate. Other encoders use their own quality scales,
     so the CRF is converted to give a similar quality, not an identical one.
+    qp: constant quality of a video card encoder on its own scale (see get_gpu_qp_scale);
+    when set, it's used for video cards as is, instead of the converted crf.
     """
     args = ["-c:v", encoder]
     args += {
@@ -120,7 +122,9 @@ def get_encoder_args(encoder, crf, bitrate_kbps):
         "libaom-av1": ["-cpu-used", "8", "-row-mt", "1"],
     }.get(encoder, [])
 
-    if crf is not None:
+    if qp is not None and encoder not in ALL_CPU_ENCODERS:
+        args += get_gpu_quality_args(encoder, qp)
+    elif crf is not None:
         args += get_quality_args(encoder, crf)
     elif bitrate_kbps is not None:
         args += ["-b:v", f"{max(round(bitrate_kbps), 1)}k"]
@@ -134,18 +138,39 @@ def get_quality_args(encoder, crf):
     if encoder == "libx264":
         return ["-crf", f"{crf:g}"]
     if encoder == "libx265":
-        # x265's CRF 28 looks about like x264's CRF 23
-        return ["-crf", f"{min(crf + 5, 51):g}"]
+        return ["-crf", f"{get_hevc_crf(crf):g}"]
     if encoder in ("libsvtav1", "libaom-av1"):
         av1_crf = str(get_av1_crf(crf))
         return ["-crf", av1_crf] + (["-b:v", "0"] if encoder == "libaom-av1" else [])
 
     # Video cards have no CRF: use their constant quality mode instead
-    if encoder.startswith("av1_") and not encoder.endswith("_nvenc"):
-        # AV1 quality index of AMF, Quick Sync and VAAPI goes from 0 to 255
-        qp = str(round(get_av1_crf(crf) * 255 / 63))
-    else:
-        qp = str(round(crf))
+    return get_gpu_quality_args(encoder, convert_crf_to_gpu_qp(encoder, crf))
+
+
+def get_gpu_qp_scale(encoder):
+    # (recommended QP, highest QP) of a video card encoder; the recommended one
+    # gives about the quality of the recommended x264 CRF
+    return convert_crf_to_gpu_qp(encoder, RECOMMENDED_CRF), 255 if uses_av1_quality_index(encoder) else 51
+
+
+def convert_crf_to_gpu_qp(encoder, crf):
+    # QP on the scale of a video card encoder for an x264 CRF
+    if uses_av1_quality_index(encoder):
+        return round(get_av1_crf(crf) * 255 / 63)
+    if encoder.startswith("hevc_"):
+        # HEVC uses the same scale on video cards and in x265
+        return round(get_hevc_crf(crf))
+    return round(crf)
+
+
+def uses_av1_quality_index(encoder):
+    # AV1 quality index of AMF, Quick Sync and VAAPI goes from 0 to 255
+    return encoder.startswith("av1_") and not encoder.endswith("_nvenc")
+
+
+def get_gpu_quality_args(encoder, qp):
+    # Constant quality options of a video card encoder for a QP on its own scale
+    qp = str(round(qp))
     if encoder.endswith("_nvenc"):
         return ["-rc", "vbr", "-cq", qp, "-b:v", "0"]
     if encoder.endswith("_qsv"):
@@ -153,6 +178,12 @@ def get_quality_args(encoder, crf):
     if encoder.endswith("_amf"):
         return ["-rc", "cqp", "-qp_i", qp, "-qp_p", qp, *(["-qp_b", qp] if encoder.startswith("h264") else [])]
     return ["-rc_mode", "CQP", "-qp", qp]
+
+
+def get_hevc_crf(crf):
+    # HEVC CRF that looks about like an x264 CRF: measured on phone videos,
+    # x265's 28 matches x264's 23 by SSIM
+    return min(crf + 5, 51)
 
 
 def get_av1_crf(crf):

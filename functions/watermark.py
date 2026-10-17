@@ -13,7 +13,7 @@ from functions.video_info import get_video_info
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path,
                   width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
-                  bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264,
+                  bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None,
                   control=None, on_progress=None):
     """
     Renders the video with a moving watermark in one ffmpeg run.
@@ -29,6 +29,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
         the encoder picks the bitrate itself and bitrate_kbps is ignored.
     use_gpu: encode with the video card, if one is found; otherwise the CPU is used.
     codec: one of VIDEO_CODECS.
+    qp: constant quality of the video card encoder on its own scale; when set, it's used
+        instead of crf for the video card (crf is still used if the CPU takes over).
     control: RenderControl to pause or stop rendering.
     on_progress: called with the rendering progress of this video in whole percent.
     """
@@ -54,11 +56,6 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
         else:
             print(f"No video card encoder for {codec} found, using the CPU")
 
-    if crf is not None:
-        video_quality = f"CRF {crf:g}"
-    else:
-        video_quality = f"bitrate {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'encoder default'}"
-
     # Temporary WAV with the normalized audio, next to the output video.
     # The name marker lets remove_partial_files() clean it up too
     normalized_audio_path = get_temp_file_path(output_video_path, "loudnorm.wav")
@@ -75,6 +72,12 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
             info, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds
         )
         for binary, encoder in encoders:
+            if qp is not None and (binary, encoder) != cpu_encoder:
+                video_quality = f"QP {qp:g}"
+            elif crf is not None:
+                video_quality = f"CRF {crf:g} (H.264 scale)"
+            else:
+                video_quality = f"bitrate {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'encoder default'}"
             print(f"Encoder: {encoder}, video {video_quality}, "
                   f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
             args = [
@@ -87,7 +90,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
                 "-filter_complex", f"{watermark_filter},{get_filter_tail(encoder)}[video]",
                 "-map", "[video]",
                 *get_audio_args(info, use_normalized_audio, audio_bitrate_kbps),
-                *get_encoder_args(encoder, crf, bitrate_kbps),
+                *get_encoder_args(encoder, crf, bitrate_kbps, qp),
                 *get_codec_tag_args(codec, output_video_path),
                 output_video_path,
             ]

@@ -22,7 +22,7 @@ def get_output_video_path(output_folder_path, video_file, video_files, codec=COD
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
          width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30, bitrate_kbps=None,
-         target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264):
+         target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -57,6 +57,7 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             crf=crf,
             use_gpu=use_gpu,
             codec=codec,
+            qp=qp,
             control=control,
             on_progress=on_video_progress
         )
