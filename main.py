@@ -1,7 +1,6 @@
 import os
 
 from constants import OUTPUT_EXTENSION_OVERRIDES, VIDEO_EXTENSIONS
-from functions.render_control import VideoProgressLogger
 from functions.watermark import add_watermark
 
 
@@ -17,7 +16,7 @@ def get_output_video_path(output_folder_path, video_file, video_files):
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
          width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30, bitrate_kbps=None,
-         target_lufs=-14.0, crf=None):
+         target_lufs=-14.0, crf=None, use_gpu=False):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -38,25 +37,21 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
         input_video_path = os.path.join(raw_videos_path, video_file)
         output_video_path = get_output_video_path(output_folder_path, video_file, video_files)
 
-        # Use a logger that reports per-video progress and handles pause/stop, if requested
-        if on_video_progress is not None or control is not None:
-            logger = VideoProgressLogger(on_video_progress, control)
-        else:
-            logger = "bar"
-
         print(f"Processing video: {video_file}")
         add_watermark(
             input_video_path,
             output_video_path,
             watermark_image_path,
-            logger=logger,
             width_percent=width_percent,
             height_percent=height_percent,
             opacity_percent=opacity_percent,
             travel_time_seconds=travel_time_seconds,
             bitrate_kbps=bitrate_kbps,
             target_lufs=target_lufs,
-            crf=crf
+            crf=crf,
+            use_gpu=use_gpu,
+            control=control,
+            on_progress=on_video_progress
         )
         print(f"Video saved: {output_video_path}")
 
@@ -75,5 +70,6 @@ if __name__ == "__main__":
     # Path to the watermark image
     watermark_image_path = "watermark.png"
 
-    # Run batch processing
-    main(raw_videos_path, output_folder_path, watermark_image_path)
+    # Run batch processing, showing the progress of each video in the same console line
+    main(raw_videos_path, output_folder_path, watermark_image_path,
+         on_video_progress=lambda percent: print(f"\rRendering: {percent}%", end="\n" if percent == 100 else "", flush=True))

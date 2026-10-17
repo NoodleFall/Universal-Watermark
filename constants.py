@@ -24,6 +24,12 @@ MAX_BITRATE_KBPS = 200000
 # Lowest audio bitrate, in kbit/s: regular AAC needs about this much for full-range stereo
 MIN_AUDIO_BITRATE_KBPS = 128
 
+# The watermark jumps to a new random horizontal position this often, in seconds
+POSITION_CHANGE_SECONDS = 5
+
+# Marks temporary files next to the output video, e.g. "watermarked_aTEMP_UW_loudnorm.wav"
+TEMP_FILE_MARKER = "TEMP_UW_"
+
 # Longest time the watermark may take to travel from the top to the bottom
 MAX_TRAVEL_TIME_SECONDS = 3600
 

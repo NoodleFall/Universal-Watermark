@@ -1,18 +1,24 @@
 import os
 import random
 
-from moviepy import AudioFileClip, CompositeVideoClip, ImageClip, VideoFileClip
-from moviepy.Clip import Clip
+from moviepy.config import FFMPEG_BINARY
+from PIL import Image
 
+from constants import POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
 from functions.audio import normalize_audio_file
 from functions.bitrate import get_audio_bitrate, get_video_bitrate
-from functions.render_control import RenderCancelled
+from functions.encoders import CPU_ENCODER, find_gpu_encoder, get_encoder_args, get_filter_tail, get_input_args
+from functions.ffmpeg_runner import FfmpegError, run_ffmpeg
+from functions.video_info import get_video_info
 
 
-def add_watermark(input_video_path, output_video_path, watermark_image_path, logger="bar",
+def add_watermark(input_video_path, output_video_path, watermark_image_path,
                   width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
-                  bitrate_kbps=None, target_lufs=-14.0, crf=None):
+                  bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False,
+                  control=None, on_progress=None):
     """
+    Renders the video with a moving watermark in one ffmpeg run.
+
     width_percent: watermark width as a percentage of the video width.
     height_percent: watermark height as a percentage of the video height,
         or None to derive it from the width, keeping the image aspect ratio.
@@ -22,123 +28,135 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path, log
     target_lufs: loudness to normalize the audio to, or None to keep the original audio.
     crf: constant quality (lower is better, x264 range 0-51); when set,
         the encoder picks the bitrate itself and bitrate_kbps is ignored.
+    use_gpu: encode with the video card, if one is found; otherwise the CPU is used.
+    control: RenderControl to pause or stop rendering.
+    on_progress: called with the rendering progress of this video in whole percent.
     """
-    # Load the video
-    video = VideoFileClip(input_video_path)
-    normalized_audio = None
-    # Temporary WAV with the normalized audio, next to the output video.
-    # The name prefix lets remove_partial_files() clean it up too
-    normalized_audio_path = get_temp_file_path(output_video_path, "loudnorm.wav")
-    cancelled = False
+    info = get_video_info(input_video_path)
 
-    try:
-        # Bitrates to encode with: the custom video bitrate or the original one,
-        # and always the original audio bitrate (None lets ffmpeg choose)
-        audio_bitrate_kbps = get_audio_bitrate(video)
-        if crf is not None:
-            bitrate_kbps = None
-        elif bitrate_kbps is None:
-            bitrate_kbps = get_video_bitrate(video, audio_bitrate_kbps)
-        if crf is not None:
-            video_quality = f"CRF {crf:g}"
+    # Bitrates to encode with: the custom video bitrate or the original one
+    # (unless a CRF is used), and the original audio bitrate (None lets ffmpeg choose)
+    audio_bitrate_kbps = get_audio_bitrate(info)
+    if crf is None and bitrate_kbps is None:
+        bitrate_kbps = get_video_bitrate(info)
+
+    # Encoders to try: the video card, if requested and available, then x264 on the CPU.
+    # Video cards have limits (e.g. the largest frame size), so a video they
+    # can't encode is rendered on the CPU instead
+    encoders = [(FFMPEG_BINARY, CPU_ENCODER)]
+    if use_gpu:
+        gpu_encoder = find_gpu_encoder()
+        if gpu_encoder is not None:
+            encoders.insert(0, gpu_encoder)
         else:
-            video_quality = f"bitrate {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'ffmpeg default'}"
-        print(f"Video {video_quality}, "
-              f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
+            print("No supported video card encoder found, using the CPU")
 
+    if crf is not None:
+        video_quality = f"CRF {crf:g}"
+    else:
+        video_quality = f"bitrate {f'{bitrate_kbps} kb/s' if bitrate_kbps else 'encoder default'}"
+
+    # Temporary WAV with the normalized audio, next to the output video.
+    # The name marker lets remove_partial_files() clean it up too
+    normalized_audio_path = get_temp_file_path(output_video_path, "loudnorm.wav")
+    succeeded = False
+    try:
         # Normalize the audio track, if requested
-        if target_lufs is not None and video.audio is not None:
-            if normalize_audio_file(input_video_path, normalized_audio_path, target_lufs, video.audio.fps):
-                normalized_audio = AudioFileClip(normalized_audio_path)
+        use_normalized_audio = False
+        if target_lufs is not None and info["audio_found"]:
+            use_normalized_audio = normalize_audio_file(
+                input_video_path, normalized_audio_path, target_lufs, info["audio_fps"], control
+            )
 
-        watermark = make_watermark_clip(
-            video, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds
+        watermark_filter = get_watermark_filter(
+            info, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds
         )
-
-        # Overlay the watermark on the video
-        final_video = CompositeVideoClip([video, watermark])
-
-        # Use the normalized audio, if available
-        if normalized_audio is not None:
-            final_video = final_video.with_audio(normalized_audio)
-
-        # Save the video with the watermark (and normalized audio, if requested)
-        final_video.write_videofile(
-            output_video_path,
-            codec="libx264",
-            audio_codec="aac",
-            bitrate=f"{max(round(bitrate_kbps), 1)}k" if bitrate_kbps else None,
-            audio_bitrate=f"{audio_bitrate_kbps}k" if audio_bitrate_kbps else None,
-            # Create the temporary audio file next to the output video
-            temp_audiofile_path=os.path.dirname(output_video_path),
-            ffmpeg_params=["-crf", f"{crf:g}"] if crf is not None else None,
-            logger=logger
-        )
-    except RenderCancelled:
-        cancelled = True
-        raise
+        for binary, encoder in encoders:
+            print(f"Encoder: {encoder}, video {video_quality}, "
+                  f"audio bitrate: {f'{audio_bitrate_kbps} kb/s' if audio_bitrate_kbps else 'ffmpeg default'}")
+            args = [
+                *get_input_args(encoder),
+                "-y",
+                "-i", input_video_path,
+                # The watermark image repeats for as long as the video lasts
+                "-loop", "1", "-i", watermark_image_path,
+                *(["-i", normalized_audio_path] if use_normalized_audio else []),
+                "-filter_complex", f"{watermark_filter},{get_filter_tail(encoder)}[video]",
+                "-map", "[video]",
+                *get_audio_args(info, use_normalized_audio, audio_bitrate_kbps),
+                *get_encoder_args(encoder, crf, bitrate_kbps),
+                output_video_path,
+            ]
+            try:
+                run_ffmpeg(binary, args, control, info["duration"], on_progress)
+                break
+            except FfmpegError as e:
+                if encoder == CPU_ENCODER:
+                    raise
+                print(f"The video card couldn't encode this video, rendering it on the CPU instead:\n{e}")
+                if os.path.exists(output_video_path):
+                    os.remove(output_video_path)
+                if on_progress is not None:
+                    on_progress(0)
+        succeeded = True
     finally:
-        # Stop the ffmpeg processes that read the files; they must be closed
-        # before the files can be removed on Windows
-        video.close()
-        if normalized_audio is not None:
-            normalized_audio.close()
         if os.path.exists(normalized_audio_path):
             os.remove(normalized_audio_path)
-        if cancelled:
+        # Don't leave an unfinished video when rendering is stopped or fails
+        if not succeeded:
             remove_partial_files(output_video_path)
 
 
-def make_watermark_clip(video, watermark_image_path, width_percent, height_percent, opacity_percent,
-                        travel_time_seconds):
-    # Load the watermark image
-    watermark = ImageClip(watermark_image_path)
+def get_watermark_filter(info, watermark_image_path, width_percent, height_percent, opacity_percent,
+                         travel_time_seconds):
+    # ffmpeg filter that scales the watermark, sets its opacity and moves it over the video
+    watermark_width, watermark_height = get_watermark_size(info, watermark_image_path, width_percent, height_percent)
+    opacity = min(max(opacity_percent, 0), 100) / 100
 
-    # Set the watermark duration to match the video duration
-    watermark = watermark.with_duration(video.duration)
+    # Top to bottom once every travel_time_seconds
+    y = f"mod(t,{travel_time_seconds:g})/{travel_time_seconds:g}*(H-h)"
+    # A new random horizontal position every POSITION_CHANGE_SECONDS: a pseudo-random
+    # number from the number of the time slot, with a random seed for each video
+    seed = random.uniform(0, 1000)
+    x = f"(W-w)*mod(abs(sin(floor(t/{POSITION_CHANGE_SECONDS})*12.9898+{seed:.4f}))*43758.5453,1)"
 
-    # Set the watermark width as a percentage of the video width
-    watermark_width = min(max(1, int(video.size[0] * width_percent / 100)), video.size[0])
+    return (
+        f"[1:v]scale={watermark_width}:{watermark_height},format=rgba,colorchannelmixer=aa={opacity:g}[watermark];"
+        f"[0:v][watermark]overlay=x='{x}':y='{y}':shortest=1"
+    )
+
+
+def get_watermark_size(info, watermark_image_path, width_percent, height_percent):
+    with Image.open(watermark_image_path) as image:
+        image_width, image_height = image.size
+
+    # Watermark width as a percentage of the video width
+    watermark_width = min(max(1, int(info["width"] * width_percent / 100)), info["width"])
     if height_percent is None:
         # Keep the image aspect ratio
-        watermark_height = int(watermark.size[1] * (watermark_width / watermark.size[0]))
+        watermark_height = int(image_height * (watermark_width / image_width))
     else:
-        watermark_height = int(video.size[1] * height_percent / 100)
+        watermark_height = int(info["height"] * height_percent / 100)
     # Don't let the watermark be empty or larger than the video
-    watermark_height = min(max(1, watermark_height), video.size[1])
-    # Pass both sides explicitly: with width= and height= moviepy ignores the width
-    watermark = watermark.resized(new_size=(watermark_width, watermark_height))
+    watermark_height = min(max(1, watermark_height), info["height"])
+    return watermark_width, watermark_height
 
-    # Set the watermark opacity
-    watermark = watermark.with_opacity(min(max(opacity_percent, 0), 100) / 100)
 
-    # Time it takes for the watermark to travel from top to bottom
-    animation_duration = travel_time_seconds  # in seconds
-
-    # Function to animate the watermark position
-    def animate_position(t):
-        # Compute the Y position based on time
-        y_position = (t % animation_duration) / animation_duration * (video.size[1] - watermark.size[1])
-
-        # Change the horizontal position randomly every 5 seconds
-        x_position = random.randint(0, video.size[0] - watermark.size[0]) if t % 5 == 0 else None
-
-        # If x_position hasn't changed, use the last value
-        if not hasattr(animate_position, 'last_x_position'):
-            animate_position.last_x_position = 0  # default starting position
-        if x_position is not None:
-            animate_position.last_x_position = x_position
-
-        return (animate_position.last_x_position, y_position)
-
-    # Apply the animation to the watermark
-    return watermark.with_position(animate_position)
+def get_audio_args(info, use_normalized_audio, audio_bitrate_kbps):
+    if use_normalized_audio:
+        # The normalized WAV is the third input
+        audio_map = ["-map", "2:a:0"]
+    elif info["audio_found"]:
+        audio_map = ["-map", "0:a:0"]
+    else:
+        return []
+    return [*audio_map, "-c:a", "aac", *(["-b:a", f"{audio_bitrate_kbps}k"] if audio_bitrate_kbps else [])]
 
 
 def get_temp_file_path(output_video_path, suffix):
-    # "<output name>TEMP_MPY_<suffix>" next to the output video, like moviepy's own temporary files
+    # "<output name><TEMP_FILE_MARKER><suffix>" next to the output video
     name = os.path.splitext(os.path.basename(output_video_path))[0]
-    return os.path.join(os.path.dirname(output_video_path), name + Clip._TEMP_FILES_PREFIX + suffix)
+    return os.path.join(os.path.dirname(output_video_path), name + TEMP_FILE_MARKER + suffix)
 
 
 def remove_partial_files(output_video_path):
@@ -146,9 +164,9 @@ def remove_partial_files(output_video_path):
     if os.path.exists(output_video_path):
         os.remove(output_video_path)
 
-    # Remove the temporary files, named "<video name>TEMP_MPY_..."
+    # Remove the temporary files, named "<video name><TEMP_FILE_MARKER>..."
     output_dir = os.path.dirname(output_video_path) or "."
     name = os.path.splitext(os.path.basename(output_video_path))[0]
     for file_name in os.listdir(output_dir):
-        if file_name.startswith(name + Clip._TEMP_FILES_PREFIX):
+        if file_name.startswith(name + TEMP_FILE_MARKER):
             os.remove(os.path.join(output_dir, file_name))
