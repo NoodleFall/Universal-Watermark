@@ -3,7 +3,7 @@ import random
 
 from PIL import Image
 
-from constants import CODEC_H264, CODEC_HEVC, POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
+from constants import CODEC_H264, CODEC_HEVC, DEFAULT_POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
 from functions.audio import normalize_audio_file
 from functions.bitrate import get_audio_bitrate, get_video_bitrate
 from functions.encoders import find_cpu_encoder, find_gpu_encoder, get_encoder_args, get_filter_tail, get_input_args
@@ -13,6 +13,7 @@ from functions.video_info import get_video_info
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path,
                   width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
+                  position_change_seconds=DEFAULT_POSITION_CHANGE_SECONDS,
                   bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None,
                   control=None, on_progress=None):
     """
@@ -23,6 +24,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
         or None to derive it from the width, keeping the image aspect ratio.
     opacity_percent: watermark opacity, from 0 (invisible) to 100 (opaque).
     travel_time_seconds: time for the watermark to travel from the top to the bottom.
+    position_change_seconds: how often the watermark jumps to a new random horizontal position.
     bitrate_kbps: video bitrate in kbit/s, or None to keep the bitrate of the original video.
     target_lufs: loudness to normalize the audio to, or None to keep the original audio.
     crf: constant quality (lower is better, x264 range 0-51); when set,
@@ -69,7 +71,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
             )
 
         watermark_filter = get_watermark_filter(
-            info, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds
+            info, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds,
+            position_change_seconds
         )
         for binary, encoder in encoders:
             if qp is not None and (binary, encoder) != cpu_encoder:
@@ -115,17 +118,17 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
 
 
 def get_watermark_filter(info, watermark_image_path, width_percent, height_percent, opacity_percent,
-                         travel_time_seconds):
+                         travel_time_seconds, position_change_seconds):
     # ffmpeg filter that scales the watermark, sets its opacity and moves it over the video
     watermark_width, watermark_height = get_watermark_size(info, watermark_image_path, width_percent, height_percent)
     opacity = min(max(opacity_percent, 0), 100) / 100
 
     # Top to bottom once every travel_time_seconds
     y = f"mod(t,{travel_time_seconds:g})/{travel_time_seconds:g}*(H-h)"
-    # A new random horizontal position every POSITION_CHANGE_SECONDS: a pseudo-random
+    # A new random horizontal position every position_change_seconds: a pseudo-random
     # number from the number of the time slot, with a random seed for each video
     seed = random.uniform(0, 1000)
-    x = f"(W-w)*mod(abs(sin(floor(t/{POSITION_CHANGE_SECONDS})*12.9898+{seed:.4f}))*43758.5453,1)"
+    x = f"(W-w)*mod(abs(sin(floor(t/{position_change_seconds:g})*12.9898+{seed:.4f}))*43758.5453,1)"
 
     return (
         f"[1:v]scale={watermark_width}:{watermark_height},format=rgba,colorchannelmixer=aa={opacity:g}[watermark];"

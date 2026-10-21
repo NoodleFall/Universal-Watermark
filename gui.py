@@ -6,12 +6,14 @@ import customtkinter as ctk
 
 from constants import (
     APP_NAME,
+    DEFAULT_POSITION_CHANGE_SECONDS,
     DISABLED_TEXT_COLOR,
     LOUDNESS_PRESETS,
     MAX_BITRATE_KBPS,
     MAX_CRF,
     MAX_GPU_QP,
     MAX_PERCENT,
+    MAX_POSITION_CHANGE_SECONDS,
     MAX_TRAVEL_TIME_SECONDS,
     NUMBER_INPUT_RE,
     NUMBER_STEP,
@@ -48,6 +50,9 @@ class WatermarkApp:
         self.travel_time_var = ctk.StringVar(
             value=valid_number_or(settings.get("travel_time_seconds"), "30", MAX_TRAVEL_TIME_SECONDS)
         )
+        self.position_change_var = ctk.StringVar(value=valid_number_or(
+            settings.get("position_change_seconds"), str(DEFAULT_POSITION_CHANGE_SECONDS), MAX_POSITION_CHANGE_SECONDS
+        ))
         self.video_quality_var = ctk.StringVar(value=find_video_quality_mode(settings))
         self.crf_var = ctk.StringVar(value=valid_number_or(settings.get("crf"), str(RECOMMENDED_CRF), MAX_CRF))
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
@@ -67,7 +72,7 @@ class WatermarkApp:
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
-                    self.travel_time_var, self.video_quality_var, self.crf_var, self.bitrate_var,
+                    self.travel_time_var, self.position_change_var, self.video_quality_var, self.crf_var, self.bitrate_var,
                     self.gpu_qp_var, self.gpu_qp_encoder_var,
                     self.codec_var, self.use_gpu_var, self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
@@ -123,10 +128,20 @@ class WatermarkApp:
             text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
         ).grid(row=0, column=2, padx=(5, 0))
 
+        # How often the watermark jumps to a new random horizontal position
+        ctk.CTkLabel(frame, text="Position change:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        position_change_row = ctk.CTkFrame(frame, fg_color="transparent")
+        position_change_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_number_field(position_change_row, self.position_change_var, MAX_POSITION_CHANGE_SECONDS)
+        ctk.CTkLabel(
+            position_change_row,
+            text=f"seconds between horizontal jumps (max: {MAX_POSITION_CHANGE_SECONDS})"
+        ).grid(row=0, column=2, padx=(5, 0))
+
         # Video codec: H.264, HEVC or AV1
-        ctk.CTkLabel(frame, text="Video codec:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Video codec:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
         codec_row = ctk.CTkFrame(frame, fg_color="transparent")
-        codec_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        codec_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         codec_menu = ctk.CTkOptionMenu(
             codec_row,
             variable=self.codec_var,
@@ -148,7 +163,7 @@ class WatermarkApp:
         self.input_buttons.append(gpu_checkbox)
 
         # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
-        ctk.CTkLabel(frame, text="Video quality:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Video quality:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
         # The menu shows display names: the constant quality mode reads "(QP)" while a video
         # card encodes; video_quality_var keeps the mode itself, as saved in the settings
         self.quality_menu = ctk.CTkOptionMenu(
@@ -157,14 +172,14 @@ class WatermarkApp:
             width=220,
             command=self._select_quality_mode
         )
-        self.quality_menu.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.quality_menu.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.input_buttons.append(self.quality_menu)
 
         # Value of the chosen quality mode: the CRF or the bitrate field, in the same place
         self.quality_value_label_var = ctk.StringVar()
-        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=9, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=10, column=0, sticky="w", padx=10, pady=2)
         self.crf_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.crf_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.crf_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.crf_row, self.crf_var, MAX_CRF)
         ctk.CTkLabel(
             self.crf_row,
@@ -173,12 +188,12 @@ class WatermarkApp:
         # QP of the video card, shown instead of the CRF when it encodes the video;
         # its highest value depends on the encoder
         self.gpu_qp_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.gpu_qp_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.gpu_qp_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.gpu_qp_row, self.gpu_qp_var, lambda: self.gpu_qp_max)
         self.gpu_qp_hint_var = ctk.StringVar()
         ctk.CTkLabel(self.gpu_qp_row, textvariable=self.gpu_qp_hint_var).grid(row=0, column=2, padx=(5, 0))
         self.bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.bitrate_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.bitrate_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.bitrate_field = self._add_auto_field(
             self.bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
             self.original_bitrate_var, None, "original"
@@ -186,9 +201,9 @@ class WatermarkApp:
         self._update_quality_fields()
 
         # Audio normalization: off, or a loudness preset of a platform or standard
-        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
         loudness_row = ctk.CTkFrame(frame, fg_color="transparent")
-        loudness_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        loudness_row.grid(row=11, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         normalize_checkbox = ctk.CTkCheckBox(
             loudness_row,
             text="Normalize",
@@ -207,7 +222,7 @@ class WatermarkApp:
         self._update_loudness_menu()
 
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=11, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=12, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -224,19 +239,19 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=12, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=13, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=12, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=12, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=13, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=13, column=2, sticky="w", padx=10, pady=2)
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=13, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=14, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=13, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=14, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=14, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=15, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
         # Find the video card encoder right away if "Use GPU" was on last time, to show its QP field
         if self.use_gpu_var.get():
@@ -252,6 +267,7 @@ class WatermarkApp:
             "keep_aspect_ratio": self.keep_ratio_var.get(),
             "opacity_percent": self.opacity_var.get(),
             "travel_time_seconds": self.travel_time_var.get(),
+            "position_change_seconds": self.position_change_var.get(),
             "video_quality": self.video_quality_var.get(),
             "crf": self.crf_var.get(),
             "gpu_qp": self.gpu_qp_var.get(),
@@ -556,6 +572,13 @@ class WatermarkApp:
         if travel_time_seconds is None:
             return
 
+        # Validate how often the watermark changes its horizontal position
+        position_change_seconds = self._parse_number(
+            self.position_change_var.get(), "Position change", MAX_POSITION_CHANGE_SECONDS
+        )
+        if position_change_seconds is None:
+            return
+
         # Validate the video quality: a CRF, or a bitrate (None keeps the bitrate of each original video)
         mode = self.video_quality_var.get()
         crf = None
@@ -597,7 +620,8 @@ class WatermarkApp:
         thread = threading.Thread(
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
-                  width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf,
+                  width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
+                  bitrate_kbps, target_lufs, crf,
                   self.use_gpu_var.get(), self.codec_var.get(), qp),
             daemon=True
         )
@@ -648,7 +672,8 @@ class WatermarkApp:
         self.stop_button.configure(state="disabled")
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent, travel_time_seconds, bitrate_kbps, target_lufs, crf,
+                 width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
+                 bitrate_kbps, target_lufs, crf,
                  use_gpu, codec, qp):
         try:
             main(
@@ -662,6 +687,7 @@ class WatermarkApp:
                 height_percent=height_percent,
                 opacity_percent=opacity_percent,
                 travel_time_seconds=travel_time_seconds,
+                position_change_seconds=position_change_seconds,
                 bitrate_kbps=bitrate_kbps,
                 target_lufs=target_lufs,
                 crf=crf,
