@@ -16,6 +16,8 @@ from constants import (
     MAX_PERCENT,
     MAX_POSITION_CHANGE_SECONDS,
     MAX_TRAVEL_TIME_SECONDS,
+    MAX_WINDOW_SCREEN_SHARE,
+    MIN_SETTINGS_HEIGHT,
     MAX_BOUNCE_SPEED_PERCENT,
     MOTION_BOUNCE,
     NUMBER_INPUT_RE,
@@ -48,7 +50,7 @@ class WatermarkApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.resizable(True, False)
+        self.root.resizable(True, True)
 
         # Restore the settings from the previous run, falling back to defaults
         settings = load_settings()
@@ -107,9 +109,11 @@ class WatermarkApp:
         self.status_var = ctk.StringVar(value="Ready")
         self.video_percent_var = ctk.StringVar(value="0%")
 
-        frame = ctk.CTkFrame(root)
-        frame.grid(sticky="nsew", padx=10, pady=10)
+        # Settings scroll when the window is too short for them; the buttons and the progress below stay in view
+        frame = ctk.CTkScrollableFrame(root)
+        frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
         root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
 
         # Inputs that are locked while rendering
@@ -303,8 +307,12 @@ class WatermarkApp:
         self.loudness_menu.grid(row=0, column=1, padx=(10, 0))
         self._update_loudness_menu()
 
-        buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=14, column=0, columnspan=3, pady=(10, 5))
+        bottom = ctk.CTkFrame(root)
+        bottom.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        bottom.columnconfigure(1, weight=1)
+
+        buttons = ctk.CTkFrame(bottom, fg_color="transparent")
+        buttons.grid(row=0, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -321,27 +329,46 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=15, column=0, sticky="w", padx=10, pady=2)
-        self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
+        ctk.CTkLabel(bottom, text="Current video:").grid(row=1, column=0, sticky="w", padx=10, pady=2)
+        self.video_progress = ctk.CTkProgressBar(bottom, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=15, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=15, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=1, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(bottom, textvariable=self.video_percent_var).grid(row=1, column=2, sticky="w", padx=10, pady=2)
         # Stage the current video bar shows the progress of, e.g. "[1/3] Measuring loudness"
-        self.video_stage_label = ctk.CTkLabel(frame)
+        self.video_stage_label = ctk.CTkLabel(bottom)
         self._set_video_stage(None)
-        self.video_stage_label.grid(row=16, column=1, sticky="w", padx=5, pady=(0, 2))
+        self.video_stage_label.grid(row=2, column=1, sticky="w", padx=5, pady=(0, 2))
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=17, column=0, sticky="w", padx=10, pady=2)
-        self.progress = ctk.CTkProgressBar(frame, mode="determinate")
+        ctk.CTkLabel(bottom, text="Overall progress:").grid(row=3, column=0, sticky="w", padx=10, pady=2)
+        self.progress = ctk.CTkProgressBar(bottom, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=17, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=3, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=18, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(bottom, textvariable=self.status_var).grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
         # Find the video card encoder right away if "Use GPU" was on last time, to show its QP field
         if self.use_gpu_var.get():
             self._check_gpu()
+
+        self._fit_window(frame, bottom)
+
+    def _fit_window(self, settings_frame, bottom):
+        # Open the window tall enough for all the settings, unless the screen is too short for that.
+        # customtkinter sizes are set in unscaled units, while Tk reports scaled pixels
+        self.root.update_idletasks()
+        bottom_height = bottom.winfo_reqheight()
+        max_height = self.root.winfo_screenheight() * MAX_WINDOW_SCREEN_SHARE - bottom_height
+        settings_frame.configure(
+            width=settings_frame._reverse_widget_scaling(settings_frame.winfo_reqwidth()),
+            height=settings_frame._reverse_widget_scaling(min(settings_frame.winfo_reqheight(), max_height))
+        )
+        # The window can be made shorter, down to a few rows of settings
+        self.root.update_idletasks()
+        self.root.minsize(
+            self.root._reverse_window_scaling(self.root.winfo_reqwidth()),
+            self.root._reverse_window_scaling(bottom_height) + MIN_SETTINGS_HEIGHT
+        )
 
     def _save_settings(self, *args):
         save_settings({
@@ -399,9 +426,9 @@ class WatermarkApp:
         # Up/Down keys and the mouse wheel change the value too
         entry.bind("<Up>", lambda e: self._step_number(entry, variable, max_value, 1, allow_zero))
         entry.bind("<Down>", lambda e: self._step_number(entry, variable, max_value, -1, allow_zero))
-        entry.bind("<MouseWheel>", lambda e: self._step_number(entry, variable, max_value, 1 if e.delta > 0 else -1, allow_zero))
-        entry.bind("<Button-4>", lambda e: self._step_number(entry, variable, max_value, 1, allow_zero))
-        entry.bind("<Button-5>", lambda e: self._step_number(entry, variable, max_value, -1, allow_zero))
+        entry.bind("<MouseWheel>", lambda e: self._wheel_number(entry, variable, max_value, 1 if e.delta > 0 else -1, allow_zero))
+        entry.bind("<Button-4>", lambda e: self._wheel_number(entry, variable, max_value, 1, allow_zero))
+        entry.bind("<Button-5>", lambda e: self._wheel_number(entry, variable, max_value, -1, allow_zero))
 
         self.input_entries.append(entry)
         self.input_buttons.extend((up, down))
@@ -418,6 +445,17 @@ class WatermarkApp:
             self.root.after_idle(variable.set, format_number(max_value))
             return False
         return True
+
+    def _wheel_number(self, entry, variable, max_value, direction, allow_zero):
+        # The mouse wheel changes the value only while the field has the cursor,
+        # otherwise it scrolls the settings, so scrolling past a field doesn't change it.
+        # The CTkEntry frame holds the Tk entry that gets the focus
+        focused = self.root.focus_get()
+        if focused is None or not str(focused).startswith(str(entry) + "."):
+            return None
+        self._step_number(entry, variable, max_value, direction, allow_zero)
+        # Don't scroll the settings as well
+        return "break"
 
     def _step_number(self, entry, variable, max_value, direction, allow_zero=False):
         if entry.cget("state") == "disabled":

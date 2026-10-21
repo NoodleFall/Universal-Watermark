@@ -60,6 +60,11 @@ MAX_TRAVEL_TIME_SECONDS = 3600
 # Text color of locked fields (light theme, dark theme)
 DISABLED_TEXT_COLOR = ("gray55", "gray50")
 
+# Largest part of the screen height the window opens with; taller settings scroll
+MAX_WINDOW_SCREEN_SHARE = 0.85
+# Lowest height of the scrollable settings when the window is made shorter, in pixels
+MIN_SETTINGS_HEIGHT = 120
+
 # Step of the arrow buttons, Up/Down keys and mouse wheel
 NUMBER_STEP = 1
 
