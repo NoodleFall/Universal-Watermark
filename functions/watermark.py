@@ -6,6 +6,7 @@ from PIL import Image
 from constants import CODEC_H264, CODEC_HEVC, DEFAULT_POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
 from functions.audio import normalize_audio_file
 from functions.bitrate import get_audio_bitrate, get_video_bitrate
+from functions.console_progress import end_progress_line
 from functions.encoders import find_cpu_encoder, find_gpu_encoder, get_encoder_args, get_filter_tail, get_input_args
 from functions.ffmpeg_runner import FfmpegError, run_ffmpeg
 from functions.video_info import get_video_info
@@ -67,7 +68,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
         use_normalized_audio = False
         if target_lufs is not None and info["audio_found"]:
             use_normalized_audio = normalize_audio_file(
-                input_video_path, normalized_audio_path, target_lufs, info["audio_fps"], control
+                input_video_path, normalized_audio_path, target_lufs, info["audio_fps"], control, info["duration"]
             )
 
         watermark_filter = get_watermark_filter(
@@ -103,6 +104,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
             except FfmpegError as e:
                 if (binary, encoder) == cpu_encoder:
                     raise
+                # The progress line of the failed attempt may be unfinished
+                end_progress_line()
                 print(f"The video card couldn't encode this video, rendering it on the CPU instead:\n{e}")
                 if os.path.exists(output_video_path):
                     os.remove(output_video_path)

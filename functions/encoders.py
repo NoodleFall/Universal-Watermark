@@ -30,6 +30,7 @@ def find_cpu_encoder(codec):
     Returns (ffmpeg binary, encoder) for the first CPU encoder of the codec that works,
     or None. The result is cached: the check can take a few seconds.
     """
+    print(f"Checking CPU encoders for {codec}...")
     return find_working_encoder(CPU_ENCODERS[codec])
 
 
@@ -39,6 +40,7 @@ def find_gpu_encoder(codec):
     Returns (ffmpeg binary, encoder) for the first video card encoder of the codec
     that works, or None. The result is cached: the check takes a few seconds.
     """
+    print(f"Checking video card encoders for {codec}...")
     return find_working_encoder(GPU_ENCODERS[codec])
 
 

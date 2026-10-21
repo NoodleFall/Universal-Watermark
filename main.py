@@ -7,6 +7,7 @@ from constants import (
     OUTPUT_EXTENSION_OVERRIDES,
     VIDEO_EXTENSIONS,
 )
+from functions.console_progress import end_progress_line, print_progress
 from functions.watermark import add_watermark
 
 
@@ -37,6 +38,12 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
     # Get a list of all video files in the folder
     video_files = [f for f in os.listdir(raw_videos_path) if f.lower().endswith(VIDEO_EXTENSIONS)]
 
+    def report_video_progress(percent):
+        # Show the progress of the current video in the console and report it to the caller (e.g. the GUI)
+        print_progress("Rendering", percent)
+        if on_video_progress is not None:
+            on_video_progress(percent)
+
     # Process each video
     for i, video_file in enumerate(video_files):
         # Wait here if paused and stop if requested before starting the next video
@@ -51,24 +58,29 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
         output_video_path = get_output_video_path(output_folder_path, video_file, video_files, codec)
 
         print(f"Processing video: {video_file}")
-        add_watermark(
-            input_video_path,
-            output_video_path,
-            watermark_image_path,
-            width_percent=width_percent,
-            height_percent=height_percent,
-            opacity_percent=opacity_percent,
-            travel_time_seconds=travel_time_seconds,
-            position_change_seconds=position_change_seconds,
-            bitrate_kbps=bitrate_kbps,
-            target_lufs=target_lufs,
-            crf=crf,
-            use_gpu=use_gpu,
-            codec=codec,
-            qp=qp,
-            control=control,
-            on_progress=on_video_progress
-        )
+        try:
+            add_watermark(
+                input_video_path,
+                output_video_path,
+                watermark_image_path,
+                width_percent=width_percent,
+                height_percent=height_percent,
+                opacity_percent=opacity_percent,
+                travel_time_seconds=travel_time_seconds,
+                position_change_seconds=position_change_seconds,
+                bitrate_kbps=bitrate_kbps,
+                target_lufs=target_lufs,
+                crf=crf,
+                use_gpu=use_gpu,
+                codec=codec,
+                qp=qp,
+                control=control,
+                on_progress=report_video_progress
+            )
+        except BaseException:
+            # Don't let the next message continue the unfinished progress line
+            end_progress_line()
+            raise
         print(f"Video saved: {output_video_path}")
 
     # Report that all videos have been processed
@@ -86,6 +98,5 @@ if __name__ == "__main__":
     # Path to the watermark image
     watermark_image_path = "watermark.png"
 
-    # Run batch processing, showing the progress of each video in the same console line
-    main(raw_videos_path, output_folder_path, watermark_image_path,
-         on_video_progress=lambda percent: print(f"\rRendering: {percent}%", end="\n" if percent == 100 else "", flush=True))
+    # Run batch processing
+    main(raw_videos_path, output_folder_path, watermark_image_path)
