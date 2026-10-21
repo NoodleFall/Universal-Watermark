@@ -24,6 +24,7 @@ from constants import (
     RECOMMENDED_CRF,
     VIDEO_CODECS,
     VIDEO_QUALITY_MODES,
+    VIDEO_STAGE_PLACEHOLDER,
 )
 from functions.encoders import find_cpu_encoder, find_gpu_encoder, get_gpu_qp_scale
 from functions.render_control import RenderCancelled, RenderControl
@@ -244,14 +245,18 @@ class WatermarkApp:
         self._set_bar(self.video_progress, 0)
         self.video_progress.grid(row=13, column=1, sticky="ew", padx=5, pady=2)
         ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=13, column=2, sticky="w", padx=10, pady=2)
+        # Stage the current video bar shows the progress of, e.g. "[1/3] Measuring loudness"
+        self.video_stage_label = ctk.CTkLabel(frame)
+        self._set_video_stage(None)
+        self.video_stage_label.grid(row=14, column=1, sticky="w", padx=5, pady=(0, 2))
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=14, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=15, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=14, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=15, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=15, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=16, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
         # Find the video card encoder right away if "Use GPU" was on last time, to show its QP field
         if self.use_gpu_var.get():
@@ -430,6 +435,16 @@ class WatermarkApp:
         progress_color = bar.cget("fg_color") if value <= 0 else bar.default_progress_color
         bar.configure(progress_color=progress_color)
         bar.set(value)
+
+    def _set_video_stage(self, stage):
+        # Show the stage of the current video, or a gray placeholder (stage None) while no video is processed
+        label = self.video_stage_label
+        if not hasattr(label, "default_text_color"):
+            label.default_text_color = label.cget("text_color")
+        if stage is None:
+            label.configure(text=VIDEO_STAGE_PLACEHOLDER, text_color=DISABLED_TEXT_COLOR)
+        else:
+            label.configure(text=stage, text_color=label.default_text_color)
 
     def _add_path_row(self, frame, row, label, variable, browse_command):
         ctk.CTkLabel(frame, text=label).grid(row=row, column=0, sticky="w", padx=10, pady=(10 if row == 0 else 2, 2))
@@ -614,6 +629,7 @@ class WatermarkApp:
         self._set_bar(self.progress, 0)
         self._set_bar(self.video_progress, 0)
         self.video_percent_var.set("0%")
+        self._set_video_stage(None)
         self.status_var.set("Starting…")
 
         # Render in a background thread so the window doesn't freeze
@@ -670,6 +686,7 @@ class WatermarkApp:
         self._set_inputs_enabled(True)
         self.pause_button.configure(state="disabled", text="Pause")
         self.stop_button.configure(state="disabled")
+        self._set_video_stage(None)
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
                  width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
@@ -713,17 +730,19 @@ class WatermarkApp:
         if video_file is not None:
             self._set_bar(self.video_progress, 0)
             self.video_percent_var.set("0%")
+            self._set_video_stage(None)
             # Remember the status to restore it after resuming from pause
             self.processing_status = f"Processing video {processed + 1} of {total}: {video_file}"
             self.status_var.set(self.processing_status)
 
-    def _on_video_progress(self, percent):
+    def _on_video_progress(self, stage, percent):
         # Called from the worker thread, so hand the UI update to the main thread
-        self.root.after(0, self._update_video_progress, percent)
+        self.root.after(0, self._update_video_progress, stage, percent)
 
-    def _update_video_progress(self, percent):
+    def _update_video_progress(self, stage, percent):
         self._set_bar(self.video_progress, percent / 100)
         self.video_percent_var.set(f"{percent}%")
+        self._set_video_stage(stage)
 
     def _on_done(self):
         if self._close_if_requested():

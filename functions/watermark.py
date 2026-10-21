@@ -3,7 +3,15 @@ import random
 
 from PIL import Image
 
-from constants import CODEC_H264, CODEC_HEVC, DEFAULT_POSITION_CHANGE_SECONDS, TEMP_FILE_MARKER
+from constants import (
+    CODEC_H264,
+    CODEC_HEVC,
+    DEFAULT_POSITION_CHANGE_SECONDS,
+    STAGE_ENCODING_VIDEO,
+    STAGE_MEASURING_LOUDNESS,
+    STAGE_NORMALIZING_AUDIO,
+    TEMP_FILE_MARKER,
+)
 from functions.audio import normalize_audio_file
 from functions.bitrate import get_audio_bitrate, get_video_bitrate
 from functions.console_progress import end_progress_line
@@ -35,9 +43,18 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
     qp: constant quality of the video card encoder on its own scale; when set, it's used
         instead of crf for the video card (crf is still used if the CPU takes over).
     control: RenderControl to pause or stop rendering.
-    on_progress: called with the rendering progress of this video in whole percent.
+    on_progress: called with (stage, percent): the current stage with its step number,
+        e.g. "[1/3] Measuring loudness", and its progress in whole percent.
     """
     info = get_video_info(input_video_path)
+
+    # Stages this video goes through: the audio is normalized only if requested and present
+    normalize_audio = target_lufs is not None and info["audio_found"]
+    stages = [*([STAGE_MEASURING_LOUDNESS, STAGE_NORMALIZING_AUDIO] if normalize_audio else []), STAGE_ENCODING_VIDEO]
+
+    def report_progress(stage, percent):
+        if on_progress is not None:
+            on_progress(f"[{stages.index(stage) + 1}/{len(stages)}] {stage}", percent)
 
     # Bitrates to encode with: the custom video bitrate or the original one
     # (unless a CRF is used), and the original audio bitrate (None lets ffmpeg choose)
@@ -66,9 +83,10 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
     try:
         # Normalize the audio track, if requested
         use_normalized_audio = False
-        if target_lufs is not None and info["audio_found"]:
+        if normalize_audio:
             use_normalized_audio = normalize_audio_file(
-                input_video_path, normalized_audio_path, target_lufs, info["audio_fps"], control, info["duration"]
+                input_video_path, normalized_audio_path, target_lufs, info["audio_fps"], control, info["duration"],
+                report_progress
             )
 
         watermark_filter = get_watermark_filter(
@@ -99,7 +117,8 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
                 output_video_path,
             ]
             try:
-                run_ffmpeg(binary, args, control, info["duration"], on_progress)
+                run_ffmpeg(binary, args, control, info["duration"],
+                           lambda percent: report_progress(STAGE_ENCODING_VIDEO, percent))
                 break
             except FfmpegError as e:
                 if (binary, encoder) == cpu_encoder:
@@ -109,8 +128,7 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
                 print(f"The video card couldn't encode this video, rendering it on the CPU instead:\n{e}")
                 if os.path.exists(output_video_path):
                     os.remove(output_video_path)
-                if on_progress is not None:
-                    on_progress(0)
+                report_progress(STAGE_ENCODING_VIDEO, 0)
         succeeded = True
     finally:
         if os.path.exists(normalized_audio_path):

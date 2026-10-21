@@ -38,11 +38,11 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
     # Get a list of all video files in the folder
     video_files = [f for f in os.listdir(raw_videos_path) if f.lower().endswith(VIDEO_EXTENSIONS)]
 
-    def report_video_progress(percent):
-        # Show the progress of the current video in the console and report it to the caller (e.g. the GUI)
-        print_progress("Rendering", percent)
+    def report_video_progress(stage, percent):
+        # Show the progress of the current stage in the console and report it to the caller (e.g. the GUI)
+        print_progress(stage, percent)
         if on_video_progress is not None:
-            on_video_progress(percent)
+            on_video_progress(stage, percent)
 
     # Process each video
     for i, video_file in enumerate(video_files):

@@ -4,12 +4,13 @@ import re
 
 from moviepy.config import FFMPEG_BINARY
 
-from constants import LOUDNESS_RANGE_LU, LOUDNESS_TRUE_PEAK_DB
-from functions.console_progress import end_progress_line, print_progress
+from constants import LOUDNESS_RANGE_LU, LOUDNESS_TRUE_PEAK_DB, STAGE_MEASURING_LOUDNESS, STAGE_NORMALIZING_AUDIO
+from functions.console_progress import end_progress_line
 from functions.ffmpeg_runner import FfmpegError, run_ffmpeg
 
 
-def normalize_audio_file(input_video_path, output_audio_path, target_lufs, sample_rate, control=None, duration=None):
+def normalize_audio_file(input_video_path, output_audio_path, target_lufs, sample_rate, control=None, duration=None,
+                         on_progress=None):
     """
     Normalizes the audio of a video to target_lufs with ffmpeg's loudnorm filter
     (EBU R128): the first pass measures the loudness, the second one applies it.
@@ -18,13 +19,22 @@ def normalize_audio_file(input_video_path, output_audio_path, target_lufs, sampl
     Writes the result to output_audio_path (WAV) and returns True,
     or returns False if the audio couldn't be normalized.
     control: RenderControl to pause or stop the normalization.
-    duration: length of the video in seconds, to show the progress of both passes in the console.
+    duration: length of the video in seconds, to report the progress of both passes.
+    on_progress: called with (stage, percent): STAGE_MEASURING_LOUDNESS or
+        STAGE_NORMALIZING_AUDIO and the progress of that pass in whole percent.
     """
     loudnorm = f"loudnorm=I={target_lufs}:TP={LOUDNESS_TRUE_PEAK_DB}:LRA={LOUDNESS_RANGE_LU}"
 
+    def stage_progress(stage):
+        # Progress callback of one pass for run_ffmpeg
+        if on_progress is None:
+            return None
+        return lambda percent: on_progress(stage, percent)
+
     # First pass: measure the loudness
     try:
-        measured = measure_loudness(input_video_path, loudnorm, control, duration)
+        measured = measure_loudness(input_video_path, loudnorm, control, duration,
+                                    stage_progress(STAGE_MEASURING_LOUDNESS))
     except (OSError, FfmpegError, ValueError) as e:
         end_progress_line()
         print(f"Failed to measure the loudness for normalization: {e}")
@@ -56,7 +66,7 @@ def normalize_audio_file(input_video_path, output_audio_path, target_lufs, sampl
             "-ar", str(sample_rate),
             "-c:a", "pcm_s16le",
             output_audio_path,
-        ], control, duration, lambda percent: print_progress("Normalizing audio", percent))
+        ], control, duration, stage_progress(STAGE_NORMALIZING_AUDIO))
     except (OSError, FfmpegError) as e:
         end_progress_line()
         print(f"Failed to normalize the audio: {e}")
@@ -64,10 +74,10 @@ def normalize_audio_file(input_video_path, output_audio_path, target_lufs, sampl
     return True
 
 
-def measure_loudness(input_video_path, loudnorm, control=None, duration=None):
+def measure_loudness(input_video_path, loudnorm, control=None, duration=None, on_progress=None):
     # Returns the loudnorm measurements of the first pass as a dict of strings
     log = run_ffmpeg(FFMPEG_BINARY, ["-i", input_video_path, "-vn", "-af", f"{loudnorm}:print_format=json", "-f", "null", "-"],
-                     control, duration, lambda percent: print_progress("Measuring loudness", percent))
+                     control, duration, on_progress)
     # loudnorm prints its JSON at the end of ffmpeg's log
     match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", log)
     if not match:

@@ -33,6 +33,14 @@ MIN_AUDIO_BITRATE_KBPS = 128
 DEFAULT_POSITION_CHANGE_SECONDS = 5
 MAX_POSITION_CHANGE_SECONDS = 3600
 
+# Stages of processing one video, in order; their progress is shown in the console and the GUI
+STAGE_MEASURING_LOUDNESS = "Measuring loudness"
+STAGE_NORMALIZING_AUDIO = "Normalizing audio"
+STAGE_ENCODING_VIDEO = "Encoding video"
+VIDEO_STAGES = (STAGE_MEASURING_LOUDNESS, STAGE_NORMALIZING_AUDIO, STAGE_ENCODING_VIDEO)
+# Shown in gray in place of the stage while no video is being processed
+VIDEO_STAGE_PLACEHOLDER = "[0/0] Video stage"
+
 # Marks temporary files next to the output video, e.g. "watermarked_aTEMP_UW_loudnorm.wav"
 TEMP_FILE_MARKER = "TEMP_UW_"
 
