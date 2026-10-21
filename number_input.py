@@ -21,8 +21,10 @@ def format_number(number):
     return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
-def valid_number_or(value, default, max_value):
-    # Use a saved value only if it is still valid
+def valid_number_or(value, default, max_value, allow_zero=False):
+    # Use a saved value only if it is still valid: above zero, or zero too with allow_zero
     value = str(value) if value is not None else ""
     number = parse_number(value)
-    return value if is_number_input(value, max_value) and number is not None and number > 0 else default
+    if not is_number_input(value, max_value) or number is None:
+        return default
+    return value if number > 0 or (allow_zero and number == 0) else default

@@ -54,6 +54,10 @@ class WatermarkApp:
         self.position_change_var = ctk.StringVar(value=valid_number_or(
             settings.get("position_change_seconds"), str(DEFAULT_POSITION_CHANGE_SECONDS), MAX_POSITION_CHANGE_SECONDS
         ))
+        self.start_position_var = ctk.StringVar(
+            value=valid_number_or(settings.get("start_position_percent"), "0", MAX_PERCENT, allow_zero=True)
+        )
+        self.random_start_var = ctk.BooleanVar(value=bool(settings.get("random_start_position", False)))
         self.video_quality_var = ctk.StringVar(value=find_video_quality_mode(settings))
         self.crf_var = ctk.StringVar(value=valid_number_or(settings.get("crf"), str(RECOMMENDED_CRF), MAX_CRF))
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
@@ -73,7 +77,8 @@ class WatermarkApp:
         # Save the settings whenever any of them changes
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
-                    self.travel_time_var, self.position_change_var, self.video_quality_var, self.crf_var, self.bitrate_var,
+                    self.travel_time_var, self.start_position_var, self.random_start_var,
+                    self.position_change_var, self.video_quality_var, self.crf_var, self.bitrate_var,
                     self.gpu_qp_var, self.gpu_qp_encoder_var,
                     self.codec_var, self.use_gpu_var, self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
@@ -129,10 +134,20 @@ class WatermarkApp:
             text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
         ).grid(row=0, column=2, padx=(5, 0))
 
+        # Vertical position of the watermark at the start of each video, as a percentage
+        # of its travel from the top, so it means the same for any resolution; or a random one
+        ctk.CTkLabel(frame, text="Start position:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        start_position_row = ctk.CTkFrame(frame, fg_color="transparent")
+        start_position_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self._add_auto_field(
+            start_position_row, self.start_position_var, MAX_PERCENT, f"% from the top (0 = top, {MAX_PERCENT} = bottom)",
+            self.random_start_var, "Random for each video", "random", allow_zero=True
+        )
+
         # How often the watermark jumps to a new random horizontal position
-        ctk.CTkLabel(frame, text="Position change:").grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Position change:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
         position_change_row = ctk.CTkFrame(frame, fg_color="transparent")
-        position_change_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        position_change_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(position_change_row, self.position_change_var, MAX_POSITION_CHANGE_SECONDS)
         ctk.CTkLabel(
             position_change_row,
@@ -140,9 +155,9 @@ class WatermarkApp:
         ).grid(row=0, column=2, padx=(5, 0))
 
         # Video codec: H.264, HEVC or AV1
-        ctk.CTkLabel(frame, text="Video codec:").grid(row=8, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Video codec:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
         codec_row = ctk.CTkFrame(frame, fg_color="transparent")
-        codec_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        codec_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         codec_menu = ctk.CTkOptionMenu(
             codec_row,
             variable=self.codec_var,
@@ -164,7 +179,7 @@ class WatermarkApp:
         self.input_buttons.append(gpu_checkbox)
 
         # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
-        ctk.CTkLabel(frame, text="Video quality:").grid(row=9, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Video quality:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
         # The menu shows display names: the constant quality mode reads "(QP)" while a video
         # card encodes; video_quality_var keeps the mode itself, as saved in the settings
         self.quality_menu = ctk.CTkOptionMenu(
@@ -173,14 +188,14 @@ class WatermarkApp:
             width=220,
             command=self._select_quality_mode
         )
-        self.quality_menu.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.quality_menu.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.input_buttons.append(self.quality_menu)
 
         # Value of the chosen quality mode: the CRF or the bitrate field, in the same place
         self.quality_value_label_var = ctk.StringVar()
-        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=10, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=11, column=0, sticky="w", padx=10, pady=2)
         self.crf_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.crf_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.crf_row.grid(row=11, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.crf_row, self.crf_var, MAX_CRF)
         ctk.CTkLabel(
             self.crf_row,
@@ -189,12 +204,12 @@ class WatermarkApp:
         # QP of the video card, shown instead of the CRF when it encodes the video;
         # its highest value depends on the encoder
         self.gpu_qp_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.gpu_qp_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.gpu_qp_row.grid(row=11, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.gpu_qp_row, self.gpu_qp_var, lambda: self.gpu_qp_max)
         self.gpu_qp_hint_var = ctk.StringVar()
         ctk.CTkLabel(self.gpu_qp_row, textvariable=self.gpu_qp_hint_var).grid(row=0, column=2, padx=(5, 0))
         self.bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.bitrate_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.bitrate_row.grid(row=11, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.bitrate_field = self._add_auto_field(
             self.bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
             self.original_bitrate_var, None, "original"
@@ -202,9 +217,9 @@ class WatermarkApp:
         self._update_quality_fields()
 
         # Audio normalization: off, or a loudness preset of a platform or standard
-        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=12, column=0, sticky="w", padx=10, pady=2)
         loudness_row = ctk.CTkFrame(frame, fg_color="transparent")
-        loudness_row.grid(row=11, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        loudness_row.grid(row=12, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         normalize_checkbox = ctk.CTkCheckBox(
             loudness_row,
             text="Normalize",
@@ -223,7 +238,7 @@ class WatermarkApp:
         self._update_loudness_menu()
 
         buttons = ctk.CTkFrame(frame, fg_color="transparent")
-        buttons.grid(row=12, column=0, columnspan=3, pady=(10, 5))
+        buttons.grid(row=13, column=0, columnspan=3, pady=(10, 5))
         self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=self._run)
         self.run_button.grid(row=0, column=0, padx=5)
         self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=self._toggle_pause)
@@ -240,23 +255,23 @@ class WatermarkApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(frame, text="Current video:").grid(row=13, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Current video:").grid(row=14, column=0, sticky="w", padx=10, pady=2)
         self.video_progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.video_progress, 0)
-        self.video_progress.grid(row=13, column=1, sticky="ew", padx=5, pady=2)
-        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=13, column=2, sticky="w", padx=10, pady=2)
+        self.video_progress.grid(row=14, column=1, sticky="ew", padx=5, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.video_percent_var).grid(row=14, column=2, sticky="w", padx=10, pady=2)
         # Stage the current video bar shows the progress of, e.g. "[1/3] Measuring loudness"
         self.video_stage_label = ctk.CTkLabel(frame)
         self._set_video_stage(None)
-        self.video_stage_label.grid(row=14, column=1, sticky="w", padx=5, pady=(0, 2))
+        self.video_stage_label.grid(row=15, column=1, sticky="w", padx=5, pady=(0, 2))
 
         # Progress over all videos
-        ctk.CTkLabel(frame, text="Overall progress:").grid(row=15, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Overall progress:").grid(row=16, column=0, sticky="w", padx=10, pady=2)
         self.progress = ctk.CTkProgressBar(frame, mode="determinate")
         self._set_bar(self.progress, 0)
-        self.progress.grid(row=15, column=1, sticky="ew", padx=5, pady=2)
+        self.progress.grid(row=16, column=1, sticky="ew", padx=5, pady=2)
 
-        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=16, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
+        ctk.CTkLabel(frame, textvariable=self.status_var).grid(row=17, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10))
 
         # Find the video card encoder right away if "Use GPU" was on last time, to show its QP field
         if self.use_gpu_var.get():
@@ -272,6 +287,8 @@ class WatermarkApp:
             "keep_aspect_ratio": self.keep_ratio_var.get(),
             "opacity_percent": self.opacity_var.get(),
             "travel_time_seconds": self.travel_time_var.get(),
+            "start_position_percent": self.start_position_var.get(),
+            "random_start_position": self.random_start_var.get(),
             "position_change_seconds": self.position_change_var.get(),
             "video_quality": self.video_quality_var.get(),
             "crf": self.crf_var.get(),
@@ -284,9 +301,10 @@ class WatermarkApp:
             "use_gpu": self.use_gpu_var.get(),
         })
 
-    def _add_number_field(self, parent, variable, max_value):
+    def _add_number_field(self, parent, variable, max_value, allow_zero=False):
         # Entry for a number up to max_value (a number, or a function returning it)
-        # with ▲/▼ buttons; returns the entry and the buttons
+        # with ▲/▼ buttons; returns the entry and the buttons.
+        # The number is above zero, or zero too with allow_zero
         entry = ctk.CTkEntry(
             parent,
             textvariable=variable,
@@ -302,18 +320,18 @@ class WatermarkApp:
         arrows = ctk.CTkFrame(parent, fg_color="transparent")
         arrows.grid(row=0, column=1, padx=(3, 0))
         up = ctk.CTkButton(arrows, text="▲", width=22, height=13, font=("", 8),
-                           command=lambda: self._step_number(entry, variable, max_value, 1))
+                           command=lambda: self._step_number(entry, variable, max_value, 1, allow_zero))
         up.grid(row=0, column=0, pady=(0, 1))
         down = ctk.CTkButton(arrows, text="▼", width=22, height=13, font=("", 8),
-                             command=lambda: self._step_number(entry, variable, max_value, -1))
+                             command=lambda: self._step_number(entry, variable, max_value, -1, allow_zero))
         down.grid(row=1, column=0)
 
         # Up/Down keys and the mouse wheel change the value too
-        entry.bind("<Up>", lambda e: self._step_number(entry, variable, max_value, 1))
-        entry.bind("<Down>", lambda e: self._step_number(entry, variable, max_value, -1))
-        entry.bind("<MouseWheel>", lambda e: self._step_number(entry, variable, max_value, 1 if e.delta > 0 else -1))
-        entry.bind("<Button-4>", lambda e: self._step_number(entry, variable, max_value, 1))
-        entry.bind("<Button-5>", lambda e: self._step_number(entry, variable, max_value, -1))
+        entry.bind("<Up>", lambda e: self._step_number(entry, variable, max_value, 1, allow_zero))
+        entry.bind("<Down>", lambda e: self._step_number(entry, variable, max_value, -1, allow_zero))
+        entry.bind("<MouseWheel>", lambda e: self._step_number(entry, variable, max_value, 1 if e.delta > 0 else -1, allow_zero))
+        entry.bind("<Button-4>", lambda e: self._step_number(entry, variable, max_value, 1, allow_zero))
+        entry.bind("<Button-5>", lambda e: self._step_number(entry, variable, max_value, -1, allow_zero))
 
         self.input_entries.append(entry)
         self.input_buttons.extend((up, down))
@@ -331,22 +349,25 @@ class WatermarkApp:
             return False
         return True
 
-    def _step_number(self, entry, variable, max_value, direction):
+    def _step_number(self, entry, variable, max_value, direction, allow_zero=False):
         if entry.cget("state") == "disabled":
             return
         max_value = max_value() if callable(max_value) else max_value
         current = parse_number(variable.get()) or 0
         new = round(current + direction * NUMBER_STEP, 2)
-        # Stay within (0, max_value]: going below zero keeps the current value
-        if new <= 0:
+        if allow_zero:
+            # Stay within [0, max_value]: going below zero stops at zero
+            new = max(new, 0)
+        elif new <= 0:
+            # Stay within (0, max_value]: going below zero keeps the current value
             return
         variable.set(format_number(min(new, max_value)))
 
-    def _add_auto_field(self, parent, variable, max_value, label, auto_var, checkbox_text, auto_text):
+    def _add_auto_field(self, parent, variable, max_value, label, auto_var, checkbox_text, auto_text, allow_zero=False):
         # Number field that auto_var switches to an automatic value, e.g. the height kept
         # from the aspect ratio or the original bitrate. With checkbox_text, a checkbox
         # controls auto_var; without it, the caller sets auto_var and calls _update_auto_field()
-        entry, arrows = self._add_number_field(parent, variable, max_value)
+        entry, arrows = self._add_number_field(parent, variable, max_value, allow_zero)
         ctk.CTkLabel(parent, text=label).grid(row=0, column=2, padx=(5, 0))
         field = {
             "entry": entry,
@@ -419,11 +440,13 @@ class WatermarkApp:
         for arrow in field["arrows"]:
             arrow.configure(state="disabled" if is_auto else "normal")
 
-    def _parse_number(self, value, name, max_value):
-        # Returns the field value as a number, or None after showing an error
+    def _parse_number(self, value, name, max_value, allow_zero=False):
+        # Returns the field value as a number, or None after showing an error.
+        # The number must be above zero, or may be zero too with allow_zero
         number = parse_number(value) if is_number_input(value, max_value) else None
-        if number is None or number <= 0:
-            messagebox.showerror("Error", f"{name} must be a number greater than 0 and up to {format_number(max_value)}.")
+        if number is None or number < 0 or (number == 0 and not allow_zero):
+            lowest = "from 0" if allow_zero else "greater than 0 and"
+            messagebox.showerror("Error", f"{name} must be a number {lowest} up to {format_number(max_value)}.")
             return None
         return number
 
@@ -594,6 +617,16 @@ class WatermarkApp:
         if position_change_seconds is None:
             return
 
+        # Validate the start position; None picks a random one for each video
+        if self.random_start_var.get():
+            start_position_percent = None
+        else:
+            start_position_percent = self._parse_number(
+                self.start_position_var.get(), "Start position", MAX_PERCENT, allow_zero=True
+            )
+            if start_position_percent is None:
+                return
+
         # Validate the video quality: a CRF, or a bitrate (None keeps the bitrate of each original video)
         mode = self.video_quality_var.get()
         crf = None
@@ -637,7 +670,7 @@ class WatermarkApp:
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
                   width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
-                  bitrate_kbps, target_lufs, crf,
+                  start_position_percent, bitrate_kbps, target_lufs, crf,
                   self.use_gpu_var.get(), self.codec_var.get(), qp),
             daemon=True
         )
@@ -690,7 +723,7 @@ class WatermarkApp:
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
                  width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
-                 bitrate_kbps, target_lufs, crf,
+                 start_position_percent, bitrate_kbps, target_lufs, crf,
                  use_gpu, codec, qp):
         try:
             main(
@@ -705,6 +738,7 @@ class WatermarkApp:
                 opacity_percent=opacity_percent,
                 travel_time_seconds=travel_time_seconds,
                 position_change_seconds=position_change_seconds,
+                start_position_percent=start_position_percent,
                 bitrate_kbps=bitrate_kbps,
                 target_lufs=target_lufs,
                 crf=crf,
