@@ -33,6 +33,16 @@ MIN_AUDIO_BITRATE_KBPS = 128
 DEFAULT_POSITION_CHANGE_SECONDS = 5
 MAX_POSITION_CHANGE_SECONDS = 3600
 
+# How the watermark moves: from the top to the bottom with random horizontal jumps,
+# or in straight lines bouncing off the edges of the video, like the DVD screensaver
+MOTION_TOP_TO_BOTTOM = "Top to bottom, horizontal jumps"
+MOTION_BOUNCE = "Bounce off the edges (DVD)"
+WATERMARK_MOTIONS = (MOTION_TOP_TO_BOTTOM, MOTION_BOUNCE)
+
+# Speed of the bouncing watermark, as a percentage of the video height per second: by default and at most
+DEFAULT_BOUNCE_SPEED_PERCENT = 10
+MAX_BOUNCE_SPEED_PERCENT = 1000
+
 # Stages of processing one video, in order; their progress is shown in the console and the GUI
 STAGE_MEASURING_LOUDNESS = "Measuring loudness"
 STAGE_NORMALIZING_AUDIO = "Normalizing audio"

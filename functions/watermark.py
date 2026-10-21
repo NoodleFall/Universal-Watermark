@@ -6,7 +6,10 @@ from PIL import Image
 from constants import (
     CODEC_H264,
     CODEC_HEVC,
+    DEFAULT_BOUNCE_SPEED_PERCENT,
     DEFAULT_POSITION_CHANGE_SECONDS,
+    MOTION_BOUNCE,
+    MOTION_TOP_TO_BOTTOM,
     STAGE_ENCODING_VIDEO,
     STAGE_MEASURING_LOUDNESS,
     STAGE_NORMALIZING_AUDIO,
@@ -23,6 +26,8 @@ from functions.video_info import get_video_info
 def add_watermark(input_video_path, output_video_path, watermark_image_path,
                   width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
                   position_change_seconds=DEFAULT_POSITION_CHANGE_SECONDS, start_position_percent=0,
+                  motion=MOTION_TOP_TO_BOTTOM, bounce_speed_percent=DEFAULT_BOUNCE_SPEED_PERCENT,
+                  horizontal_start_percent=None,
                   bitrate_kbps=None, target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None,
                   control=None, on_progress=None):
     """
@@ -32,8 +37,16 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
     height_percent: watermark height as a percentage of the video height,
         or None to derive it from the width, keeping the image aspect ratio.
     opacity_percent: watermark opacity, from 0 (invisible) to 100 (opaque).
-    travel_time_seconds: time for the watermark to travel from the top to the bottom.
-    position_change_seconds: how often the watermark jumps to a new random horizontal position.
+    travel_time_seconds: time for the watermark to travel from the top to the bottom
+        (MOTION_TOP_TO_BOTTOM only).
+    position_change_seconds: how often the watermark jumps to a new random horizontal position
+        (MOTION_TOP_TO_BOTTOM only).
+    motion: one of WATERMARK_MOTIONS.
+    bounce_speed_percent: speed of the bouncing watermark, as a percentage of the video
+        height per second, the same in pixels on both axes (MOTION_BOUNCE only).
+    horizontal_start_percent: horizontal position of the bouncing watermark at the start
+        of the video, from 0 (left) to 100 (right) of its travel, or None for a random one
+        (MOTION_BOUNCE only).
     start_position_percent: vertical position of the watermark at the start of the video,
         from 0 (top) to 100 (bottom) of its travel, or None for a random one.
     bitrate_kbps: video bitrate in kbit/s, or None to keep the bitrate of the original video.
@@ -95,9 +108,13 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
         if start_position_percent is None:
             start_position_percent = random.uniform(0, 100)
             print(f"Watermark start position: {start_position_percent:.0f}% from the top (random)")
+        if motion == MOTION_BOUNCE and horizontal_start_percent is None:
+            horizontal_start_percent = random.uniform(0, 100)
+            print(f"Watermark horizontal start: {horizontal_start_percent:.0f}% from the left (random)")
         watermark_filter = get_watermark_filter(
-            info, watermark_image_path, width_percent, height_percent, opacity_percent, travel_time_seconds,
-            position_change_seconds, start_position_percent
+            info, watermark_image_path, width_percent, height_percent, opacity_percent, motion,
+            travel_time_seconds, position_change_seconds, bounce_speed_percent,
+            start_position_percent, horizontal_start_percent
         )
         for binary, encoder in encoders:
             if qp is not None and (binary, encoder) != cpu_encoder:
@@ -144,27 +161,62 @@ def add_watermark(input_video_path, output_video_path, watermark_image_path,
             remove_partial_files(output_video_path)
 
 
-def get_watermark_filter(info, watermark_image_path, width_percent, height_percent, opacity_percent,
-                         travel_time_seconds, position_change_seconds, start_position_percent):
+def get_watermark_filter(info, watermark_image_path, width_percent, height_percent, opacity_percent, motion,
+                         travel_time_seconds, position_change_seconds, bounce_speed_percent,
+                         start_position_percent, horizontal_start_percent):
     # ffmpeg filter that scales the watermark, sets its opacity and moves it over the video
     watermark_width, watermark_height = get_watermark_size(info, watermark_image_path, width_percent, height_percent)
     opacity = min(max(opacity_percent, 0), 100) / 100
+    start = to_fraction(start_position_percent)
 
-    # Top to bottom once every travel_time_seconds, starting start_position_percent of the way down:
-    # the motion is shifted by that part of the travel time. At 100% the shift is kept 1 ms short
-    # of a full pass, so the first frame shows the watermark at the bottom instead of the top
-    start_offset = min(min(max(start_position_percent, 0), 100) / 100 * travel_time_seconds,
-                       travel_time_seconds - 0.001)
-    y = f"mod(t+{start_offset:.3f},{travel_time_seconds:g})/{travel_time_seconds:g}*(H-h)"
-    # A new random horizontal position every position_change_seconds: a pseudo-random
-    # number from the number of the time slot, with a random seed for each video
-    seed = random.uniform(0, 1000)
-    x = f"(W-w)*mod(abs(sin(floor(t/{position_change_seconds:g})*12.9898+{seed:.4f}))*43758.5453,1)"
+    if motion == MOTION_BOUNCE:
+        x, y = get_bounce_position(
+            info["width"] - watermark_width, info["height"] - watermark_height,
+            bounce_speed_percent / 100 * info["height"], to_fraction(horizontal_start_percent), start
+        )
+    else:
+        # Top to bottom once every travel_time_seconds, starting start_position_percent of the way down:
+        # the motion is shifted by that part of the travel time. At 100% the shift is kept 1 ms short
+        # of a full pass, so the first frame shows the watermark at the bottom instead of the top
+        start_offset = min(start * travel_time_seconds, travel_time_seconds - 0.001)
+        y = f"mod(t+{start_offset:.3f},{travel_time_seconds:g})/{travel_time_seconds:g}*(H-h)"
+        # A new random horizontal position every position_change_seconds: a pseudo-random
+        # number from the number of the time slot, with a random seed for each video
+        seed = random.uniform(0, 1000)
+        x = f"(W-w)*mod(abs(sin(floor(t/{position_change_seconds:g})*12.9898+{seed:.4f}))*43758.5453,1)"
 
     return (
         f"[1:v]scale={watermark_width}:{watermark_height},format=rgba,colorchannelmixer=aa={opacity:g}[watermark];"
         f"[0:v][watermark]overlay=x='{x}':y='{y}':shortest=1"
     )
+
+
+def to_fraction(percent):
+    # 0-100% as 0-1
+    return min(max(percent, 0), 100) / 100
+
+
+def get_bounce_position(range_x, range_y, speed, start_x, start_y):
+    """
+    x and y expressions of the watermark moving like the DVD screensaver: in a straight
+    diagonal line at the same speed on both axes, bouncing off the edges of the video.
+
+    range_x, range_y: how far the watermark can move, in pixels (video size minus watermark size).
+    speed: in pixels per second along each axis.
+    start_x, start_y: position at the start, from 0 (left, top) to 1 (right, bottom);
+        the watermark moves right and down first, and bounces back right away from the far edge.
+    """
+    # A position along a there-and-back path of 2 * range: past range is on the way back
+    x = get_bounce_expression(range_x, speed, start_x * range_x)
+    y = get_bounce_expression(range_y, speed, start_y * range_y)
+    return x, y
+
+
+def get_bounce_expression(range_px, speed, offset):
+    # Moves between 0 and range_px and back at speed, from offset along the there-and-back path
+    if range_px <= 0:
+        return "0"
+    return f"{range_px}-abs(mod({speed:.6f}*t+{offset:.3f},{2 * range_px})-{range_px})"
 
 
 def get_watermark_size(info, watermark_image_path, width_percent, height_percent):

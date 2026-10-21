@@ -3,7 +3,9 @@ import os
 from constants import (
     CODEC_CONTAINERS,
     CODEC_H264,
+    DEFAULT_BOUNCE_SPEED_PERCENT,
     DEFAULT_POSITION_CHANGE_SECONDS,
+    MOTION_TOP_TO_BOTTOM,
     OUTPUT_EXTENSION_OVERRIDES,
     VIDEO_EXTENSIONS,
 )
@@ -30,6 +32,8 @@ def get_output_video_path(output_folder_path, video_file, video_files, codec=COD
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
          width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30, bitrate_kbps=None,
          position_change_seconds=DEFAULT_POSITION_CHANGE_SECONDS, start_position_percent=0,
+         motion=MOTION_TOP_TO_BOTTOM, bounce_speed_percent=DEFAULT_BOUNCE_SPEED_PERCENT,
+         horizontal_start_percent=None,
          target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None):
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
@@ -69,6 +73,9 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
                 travel_time_seconds=travel_time_seconds,
                 position_change_seconds=position_change_seconds,
                 start_position_percent=start_position_percent,
+                motion=motion,
+                bounce_speed_percent=bounce_speed_percent,
+                horizontal_start_percent=horizontal_start_percent,
                 bitrate_kbps=bitrate_kbps,
                 target_lufs=target_lufs,
                 crf=crf,

@@ -7,10 +7,12 @@ from constants import (
     CODEC_H264,
     DEFAULT_LOUDNESS_PRESET,
     LOUDNESS_PRESETS,
+    MOTION_TOP_TO_BOTTOM,
     QUALITY_CRF,
     QUALITY_CUSTOM_BITRATE,
     VIDEO_CODECS,
     VIDEO_QUALITY_MODES,
+    WATERMARK_MOTIONS,
 )
 
 
@@ -67,3 +69,8 @@ def find_video_quality_mode(settings):
 def find_codec(saved_codec):
     # Saved video codec, or H.264 if none was saved yet
     return saved_codec if saved_codec in VIDEO_CODECS else CODEC_H264
+
+
+def find_watermark_motion(saved_motion):
+    # Saved watermark motion, or top to bottom, the only motion before the choice existed
+    return saved_motion if saved_motion in WATERMARK_MOTIONS else MOTION_TOP_TO_BOTTOM
