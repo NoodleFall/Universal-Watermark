@@ -28,3 +28,17 @@ def valid_number_or(value, default, max_value, allow_zero=False):
     if not is_number_input(value, max_value) or number is None:
         return default
     return value if number > 0 or (allow_zero and number == 0) else default
+
+
+class InvalidInput(Exception):
+    """A setting can't be used as entered; the message tells the user what's wrong."""
+
+
+def parse_field(value, name, max_value, allow_zero=False):
+    # Returns the field value as a number, or raises InvalidInput.
+    # The number must be above zero, or may be zero too with allow_zero
+    number = parse_number(value) if is_number_input(value, max_value) else None
+    if number is None or number < 0 or (number == 0 and not allow_zero):
+        lowest = "from 0" if allow_zero else "greater than 0 and"
+        raise InvalidInput(f"{name} must be a number {lowest} up to {format_number(max_value)}.")
+    return number
