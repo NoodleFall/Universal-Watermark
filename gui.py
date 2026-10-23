@@ -6,7 +6,7 @@ import customtkinter as ctk
 
 from constants import (
     APP_NAME,
-    CUSTOM_MOTION_KEYS,
+    MOTION_KEYS,
     CUSTOM_ORDERS,
     CUSTOM_ORDER_IN_TURN,
     CUSTOM_ORDER_RANDOM,
@@ -102,18 +102,14 @@ class WatermarkApp:
         self.keep_ratio_var = ctk.BooleanVar(value=bool(settings.get("keep_aspect_ratio", True)))
         self.opacity_var = ctk.StringVar(value=valid_number_or(settings.get("opacity_percent"), "33", MAX_PERCENT))
         self.motion_var = ctk.StringVar(value=find_watermark_motion(settings.get("watermark_motion")))
-        # Settings of each motion when it's chosen on its own: {motion: {field name: variable}}.
-        # Both motions share the vertical start position
-        self.motion_vars = {motion: self._load_motion_vars(settings, motion, "") for motion in MOTION_FIELDS}
-        for name in ("start_position_percent", "random_start_position"):
-            self.motion_vars[MOTION_BOUNCE][name] = self.motion_vars[MOTION_TOP_TO_BOTTOM][name]
-        # The custom motion has its own settings of each motion it mixes, saved with a prefix,
-        # and whether the motion is used, its number in turn and whether its settings are shown
-        self.custom_motion_vars = {}
+        # Settings of each motion: {motion: {field name: variable}}, the same whether the motion
+        # is chosen on its own or mixed in the custom motion, so a change in one place shows in the other
+        self.motion_vars = {motion: self._load_motion_vars(settings, motion) for motion in MOTION_FIELDS}
+        # For each motion the custom motion mixes: whether it's used, its number in turn
+        # and whether its settings are shown
         self.custom_motion_state = {}
-        for i, (motion, key) in enumerate(CUSTOM_MOTION_KEYS.items()):
+        for i, (motion, key) in enumerate(MOTION_KEYS.items()):
             prefix = f"custom_{key}_"
-            self.custom_motion_vars[motion] = self._load_motion_vars(settings, motion, prefix)
             self.custom_motion_state[motion] = {
                 "use": ctk.BooleanVar(value=bool(settings.get(prefix + "use", True))),
                 "order": ctk.StringVar(value=str(settings.get(prefix + "order", i + 1))),
@@ -147,7 +143,7 @@ class WatermarkApp:
         # once (by id, as Tk variables can't be hashed), so a change saves the settings once
         motion_vars = {
             id(var): var
-            for groups in (self.motion_vars, self.custom_motion_vars, self.custom_motion_state)
+            for groups in (self.motion_vars, self.custom_motion_state)
             for group in groups.values()
             for var in group.values()
         }.values()
@@ -225,7 +221,8 @@ class WatermarkApp:
         }
 
         # Custom: how the videos pick a motion, then a collapsible section for each motion
-        # with its header (name, whether it's used, its number in turn) and its own settings
+        # with its header (name, whether it's used, its number in turn) and its settings,
+        # the same variables as when the motion is chosen on its own
         self.custom_order_label = ctk.CTkLabel(frame, text="Motion order:")
         self.custom_order_label.grid(row=7, column=0, sticky="w", padx=10, pady=2)
         self.custom_order_menu = ctk.CTkOptionMenu(
@@ -239,9 +236,9 @@ class WatermarkApp:
         self.input_buttons.append(self.custom_order_menu)
         self.custom_sections = {}
         row = 8
-        for motion in CUSTOM_MOTION_KEYS:
+        for motion in MOTION_KEYS:
             header = self._add_custom_motion_header(frame, row, motion)
-            rows = self._add_motion_rows(frame, row + 1, motion, self.custom_motion_vars[motion], indent=True)
+            rows = self._add_motion_rows(frame, row + 1, motion, self.motion_vars[motion], indent=True)
             self.custom_sections[motion] = {"header": header, "rows": rows}
             row += 1 + len(MOTION_FIELDS[motion])
         self._update_motion_fields()
@@ -389,13 +386,14 @@ class WatermarkApp:
         )
 
     def _save_settings(self, *args):
-        # Motion settings: those of a motion on its own under their names, the custom ones with a prefix
+        # Motion settings, named after their motion, e.g. "bounce_start_position_percent",
+        # and the state of each motion in the custom motion, e.g. "custom_bounce_use"
         motion_settings = {}
-        for motion_vars in self.motion_vars.values():
-            motion_settings.update({name: var.get() for name, var in motion_vars.items()})
-        for motion, key in CUSTOM_MOTION_KEYS.items():
-            for group in (self.custom_motion_vars[motion], self.custom_motion_state[motion]):
-                motion_settings.update({f"custom_{key}_{name}": var.get() for name, var in group.items()})
+        for motion, key in MOTION_KEYS.items():
+            motion_settings.update({f"{key}_{name}": var.get() for name, var in self.motion_vars[motion].items()})
+            motion_settings.update(
+                {f"custom_{key}_{name}": var.get() for name, var in self.custom_motion_state[motion].items()}
+            )
         save_settings({
             "raw_videos_path": self.raw_videos_var.get(),
             "output_folder_path": self.output_folder_var.get(),
@@ -551,16 +549,22 @@ class WatermarkApp:
             self.original_bitrate_var.set(mode == QUALITY_ORIGINAL_BITRATE)
             self._update_auto_field(self.bitrate_field)
 
-    def _load_motion_vars(self, settings, motion, prefix):
-        # Variables of the settings of a motion, restored from the settings saved as prefix + field name
+    def _load_motion_vars(self, settings, motion):
+        # Variables of the settings of a motion, restored from the settings saved under the motion's
+        # name, e.g. "bounce_bounce_speed_percent", or, from before that, under the field name alone
+        prefix = MOTION_KEYS[motion] + "_"
+
+        def saved(name, default=None):
+            return settings.get(prefix + name, settings.get(name, default))
+
         motion_vars = {}
         for field in MOTION_FIELDS[motion]:
             motion_vars[field["name"]] = ctk.StringVar(value=valid_number_or(
-                settings.get(prefix + field["name"]), str(field["default"]), field["max"], allow_zero="random" in field
+                saved(field["name"]), str(field["default"]), field["max"], allow_zero="random" in field
             ))
             if "random" in field:
                 motion_vars[field["random"]] = ctk.BooleanVar(
-                    value=bool(settings.get(prefix + field["random"], field["random_default"]))
+                    value=bool(saved(field["random"], field["random_default"]))
                 )
         return motion_vars
 
@@ -610,7 +614,7 @@ class WatermarkApp:
         order_menu = ctk.CTkOptionMenu(
             header,
             variable=state["order"],
-            values=[str(n) for n in range(1, len(CUSTOM_MOTION_KEYS) + 1)],
+            values=[str(n) for n in range(1, len(MOTION_KEYS) + 1)],
             width=70,
             command=lambda number: self._set_custom_order(motion)
         )
@@ -626,7 +630,7 @@ class WatermarkApp:
     def _set_custom_order(self, motion):
         # The motion that had the chosen number takes the number left free, so the numbers don't repeat
         number = self.custom_motion_state[motion]["order"].get()
-        free = {str(n) for n in range(1, len(CUSTOM_MOTION_KEYS) + 1)}
+        free = {str(n) for n in range(1, len(MOTION_KEYS) + 1)}
         free -= {state["order"].get() for state in self.custom_motion_state.values()}
         for other, state in self.custom_motion_state.items():
             if other != motion and state["order"].get() == number and free:
@@ -658,8 +662,9 @@ class WatermarkApp:
         self._update_custom_controls()
 
     def _update_custom_controls(self):
-        # While idle, refresh the fields with a random checkbox (motions on their own share theirs,
-        # so a field may be out of date) and allow a number in turn only where it's used
+        # While idle, refresh the fields with a random checkbox (a motion's settings are shown both
+        # on their own and in the custom motion, so the hidden field may be out of date)
+        # and allow a number in turn only where it's used
         if self.control is not None:
             return
         for rows in [*self.motion_widgets.values(), *(section["rows"] for section in self.custom_sections.values())]:
@@ -883,7 +888,7 @@ class WatermarkApp:
             motions = [motion_settings]
         else:
             # Custom: the used motions in turn by their numbers, or each video takes a random one
-            used = [m for m in CUSTOM_MOTION_KEYS if self.custom_motion_state[m]["use"].get()]
+            used = [m for m in MOTION_KEYS if self.custom_motion_state[m]["use"].get()]
             if not used:
                 messagebox.showerror("Error", "Custom motion: turn on \"Use\" for at least one motion.")
                 return
@@ -891,7 +896,7 @@ class WatermarkApp:
             motions = []
             for custom_motion in used:
                 motion_settings = self._parse_motion_settings(
-                    custom_motion, self.custom_motion_vars[custom_motion], f"{custom_motion}: "
+                    custom_motion, self.motion_vars[custom_motion], f"{custom_motion}: "
                 )
                 if motion_settings is None:
                     return

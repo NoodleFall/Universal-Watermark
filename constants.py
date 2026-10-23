@@ -37,13 +37,13 @@ MAX_POSITION_CHANGE_SECONDS = 3600
 # or in straight lines bouncing off the edges of the video, like the DVD screensaver
 MOTION_TOP_TO_BOTTOM = "Top to bottom, horizontal jumps"
 MOTION_BOUNCE = "Bounce off the edges (DVD)"
-# Mixes the motions above over the videos, each with its own settings
+# Mixes the motions above over the videos, each with the same settings as when chosen on its own
 MOTION_CUSTOM = "Custom (mix motions)"
 WATERMARK_MOTIONS = (MOTION_TOP_TO_BOTTOM, MOTION_BOUNCE, MOTION_CUSTOM)
 
-# Motions the custom motion mixes, in their default order, with the names
-# their custom settings are saved under, e.g. "custom_bounce_bounce_speed_percent"
-CUSTOM_MOTION_KEYS = {MOTION_TOP_TO_BOTTOM: "top_to_bottom", MOTION_BOUNCE: "bounce"}
+# Motions the custom motion mixes, in their default order, with the names their settings
+# are saved under, e.g. "bounce_start_position_percent" and "custom_bounce_use"
+MOTION_KEYS = {MOTION_TOP_TO_BOTTOM: "top_to_bottom", MOTION_BOUNCE: "bounce"}
 
 # How the custom motion picks the motion of each video: in turn by their numbers, or at random
 CUSTOM_ORDER_IN_TURN = "In turn, by number"
