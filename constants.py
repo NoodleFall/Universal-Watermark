@@ -37,7 +37,21 @@ MAX_POSITION_CHANGE_SECONDS = 3600
 # or in straight lines bouncing off the edges of the video, like the DVD screensaver
 MOTION_TOP_TO_BOTTOM = "Top to bottom, horizontal jumps"
 MOTION_BOUNCE = "Bounce off the edges (DVD)"
-WATERMARK_MOTIONS = (MOTION_TOP_TO_BOTTOM, MOTION_BOUNCE)
+# Mixes the motions above over the videos, each with its own settings
+MOTION_CUSTOM = "Custom (mix motions)"
+WATERMARK_MOTIONS = (MOTION_TOP_TO_BOTTOM, MOTION_BOUNCE, MOTION_CUSTOM)
+
+# Motions the custom motion mixes, in their default order, with the names
+# their custom settings are saved under, e.g. "custom_bounce_bounce_speed_percent"
+CUSTOM_MOTION_KEYS = {MOTION_TOP_TO_BOTTOM: "top_to_bottom", MOTION_BOUNCE: "bounce"}
+
+# How the custom motion picks the motion of each video: in turn by their numbers, or at random
+CUSTOM_ORDER_IN_TURN = "In turn, by number"
+CUSTOM_ORDER_RANDOM = "Random for each video"
+CUSTOM_ORDERS = (CUSTOM_ORDER_IN_TURN, CUSTOM_ORDER_RANDOM)
+
+# Time for the watermark to travel from the top to the bottom by default, in seconds
+DEFAULT_TRAVEL_TIME_SECONDS = 30
 
 # Speed of the bouncing watermark, as a percentage of the video height per second: by default and at most
 DEFAULT_BOUNCE_SPEED_PERCENT = 10
@@ -59,6 +73,8 @@ MAX_TRAVEL_TIME_SECONDS = 3600
 
 # Text color of locked fields (light theme, dark theme)
 DISABLED_TEXT_COLOR = ("gray55", "gray50")
+# Background of a collapsible section header under the mouse (light theme, dark theme)
+SECTION_HOVER_COLOR = ("gray80", "gray30")
 
 # Largest part of the screen height the window opens with; taller settings scroll
 MAX_WINDOW_SCREEN_SHARE = 0.85

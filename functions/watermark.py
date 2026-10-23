@@ -8,6 +8,7 @@ from constants import (
     CODEC_HEVC,
     DEFAULT_BOUNCE_SPEED_PERCENT,
     DEFAULT_POSITION_CHANGE_SECONDS,
+    DEFAULT_TRAVEL_TIME_SECONDS,
     MOTION_BOUNCE,
     MOTION_TOP_TO_BOTTOM,
     STAGE_ENCODING_VIDEO,
@@ -24,7 +25,8 @@ from functions.video_info import get_video_info
 
 
 def add_watermark(input_video_path, output_video_path, watermark_image_path,
-                  width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30,
+                  width_percent=50, height_percent=None, opacity_percent=33,
+                  travel_time_seconds=DEFAULT_TRAVEL_TIME_SECONDS,
                   position_change_seconds=DEFAULT_POSITION_CHANGE_SECONDS, start_position_percent=0,
                   motion=MOTION_TOP_TO_BOTTOM, bounce_speed_percent=DEFAULT_BOUNCE_SPEED_PERCENT,
                   horizontal_start_percent=None,

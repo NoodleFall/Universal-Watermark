@@ -6,11 +6,17 @@ import customtkinter as ctk
 
 from constants import (
     APP_NAME,
+    CUSTOM_MOTION_KEYS,
+    CUSTOM_ORDERS,
+    CUSTOM_ORDER_IN_TURN,
+    CUSTOM_ORDER_RANDOM,
     DEFAULT_BOUNCE_SPEED_PERCENT,
     DEFAULT_POSITION_CHANGE_SECONDS,
+    DEFAULT_TRAVEL_TIME_SECONDS,
     DISABLED_TEXT_COLOR,
     LOUDNESS_PRESETS,
     MAX_BITRATE_KBPS,
+    MAX_BOUNCE_SPEED_PERCENT,
     MAX_CRF,
     MAX_GPU_QP,
     MAX_PERCENT,
@@ -18,8 +24,8 @@ from constants import (
     MAX_TRAVEL_TIME_SECONDS,
     MAX_WINDOW_SCREEN_SHARE,
     MIN_SETTINGS_HEIGHT,
-    MAX_BOUNCE_SPEED_PERCENT,
     MOTION_BOUNCE,
+    MOTION_TOP_TO_BOTTOM,
     NUMBER_INPUT_RE,
     NUMBER_STEP,
     QUALITY_CRF,
@@ -27,6 +33,7 @@ from constants import (
     QUALITY_GPU_QP,
     QUALITY_ORIGINAL_BITRATE,
     RECOMMENDED_CRF,
+    SECTION_HOVER_COLOR,
     VIDEO_CODECS,
     VIDEO_QUALITY_MODES,
     VIDEO_STAGE_PLACEHOLDER,
@@ -46,6 +53,39 @@ from settings import (
 )
 
 
+# Fields of the settings of each motion, in their order on screen. name: setting of add_watermark(),
+# also its name in the settings file; random: name of the checkbox that picks a random value instead
+# (such fields accept zero), random_default: whether it starts checked
+MOTION_FIELDS = {
+    MOTION_TOP_TO_BOTTOM: (
+        {"name": "travel_time_seconds", "label": "Travel time", "max": MAX_TRAVEL_TIME_SECONDS,
+         "default": DEFAULT_TRAVEL_TIME_SECONDS, "hint": f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"},
+        # Vertical position at the start of each video, as a percentage of the travel
+        # from the top, so it means the same for any resolution
+        {"name": "start_position_percent", "label": "Start position", "max": MAX_PERCENT, "default": 0,
+         "hint": f"% from the top (0 = top, {MAX_PERCENT} = bottom)",
+         "random": "random_start_position", "random_default": False},
+        {"name": "position_change_seconds", "label": "Position change", "max": MAX_POSITION_CHANGE_SECONDS,
+         "default": DEFAULT_POSITION_CHANGE_SECONDS,
+         "hint": f"seconds between horizontal jumps (max: {MAX_POSITION_CHANGE_SECONDS})"},
+    ),
+    MOTION_BOUNCE: (
+        # Speed as a percentage of the video height per second, the same in pixels
+        # on both axes, so it looks the same for any resolution
+        {"name": "bounce_speed_percent", "label": "Speed", "max": MAX_BOUNCE_SPEED_PERCENT,
+         "default": DEFAULT_BOUNCE_SPEED_PERCENT,
+         "hint": f"% of video height per second (max: {MAX_BOUNCE_SPEED_PERCENT})"},
+        {"name": "start_position_percent", "label": "Vertical start", "max": MAX_PERCENT, "default": 0,
+         "hint": f"% from the top (0 = top, {MAX_PERCENT} = bottom)",
+         "random": "random_start_position", "random_default": False},
+        # Random by default: the bouncing watermark always started at a random horizontal position before
+        {"name": "horizontal_start_percent", "label": "Horizontal start", "max": MAX_PERCENT, "default": 0,
+         "hint": f"% from the left (0 = left, {MAX_PERCENT} = right)",
+         "random": "random_horizontal_start", "random_default": True},
+    ),
+}
+
+
 class WatermarkApp:
     def __init__(self, root):
         self.root = root
@@ -61,25 +101,32 @@ class WatermarkApp:
         self.height_var = ctk.StringVar(value=valid_number_or(settings.get("height_percent"), "20", MAX_PERCENT))
         self.keep_ratio_var = ctk.BooleanVar(value=bool(settings.get("keep_aspect_ratio", True)))
         self.opacity_var = ctk.StringVar(value=valid_number_or(settings.get("opacity_percent"), "33", MAX_PERCENT))
-        self.travel_time_var = ctk.StringVar(
-            value=valid_number_or(settings.get("travel_time_seconds"), "30", MAX_TRAVEL_TIME_SECONDS)
-        )
-        self.position_change_var = ctk.StringVar(value=valid_number_or(
-            settings.get("position_change_seconds"), str(DEFAULT_POSITION_CHANGE_SECONDS), MAX_POSITION_CHANGE_SECONDS
-        ))
-        self.start_position_var = ctk.StringVar(
-            value=valid_number_or(settings.get("start_position_percent"), "0", MAX_PERCENT, allow_zero=True)
-        )
-        self.random_start_var = ctk.BooleanVar(value=bool(settings.get("random_start_position", False)))
         self.motion_var = ctk.StringVar(value=find_watermark_motion(settings.get("watermark_motion")))
-        self.bounce_speed_var = ctk.StringVar(value=valid_number_or(
-            settings.get("bounce_speed_percent"), str(DEFAULT_BOUNCE_SPEED_PERCENT), MAX_BOUNCE_SPEED_PERCENT
-        ))
-        self.horizontal_start_var = ctk.StringVar(
-            value=valid_number_or(settings.get("horizontal_start_percent"), "0", MAX_PERCENT, allow_zero=True)
-        )
-        # Random by default: the bouncing watermark always started at a random horizontal position before
-        self.random_horizontal_start_var = ctk.BooleanVar(value=bool(settings.get("random_horizontal_start", True)))
+        # Settings of each motion when it's chosen on its own: {motion: {field name: variable}}.
+        # Both motions share the vertical start position
+        self.motion_vars = {motion: self._load_motion_vars(settings, motion, "") for motion in MOTION_FIELDS}
+        for name in ("start_position_percent", "random_start_position"):
+            self.motion_vars[MOTION_BOUNCE][name] = self.motion_vars[MOTION_TOP_TO_BOTTOM][name]
+        # The custom motion has its own settings of each motion it mixes, saved with a prefix,
+        # and whether the motion is used, its number in turn and whether its settings are shown
+        self.custom_motion_vars = {}
+        self.custom_motion_state = {}
+        for i, (motion, key) in enumerate(CUSTOM_MOTION_KEYS.items()):
+            prefix = f"custom_{key}_"
+            self.custom_motion_vars[motion] = self._load_motion_vars(settings, motion, prefix)
+            self.custom_motion_state[motion] = {
+                "use": ctk.BooleanVar(value=bool(settings.get(prefix + "use", True))),
+                "order": ctk.StringVar(value=str(settings.get(prefix + "order", i + 1))),
+                "expanded": ctk.BooleanVar(value=bool(settings.get(prefix + "expanded", True))),
+            }
+        # Numbers in turn must be 1, 2, … without repeats; otherwise use the default order
+        orders = sorted(state["order"].get() for state in self.custom_motion_state.values())
+        if orders != [str(n) for n in range(1, len(orders) + 1)]:
+            for i, state in enumerate(self.custom_motion_state.values()):
+                state["order"].set(str(i + 1))
+        self.custom_order_var = ctk.StringVar(value=settings.get("custom_motion_order", CUSTOM_ORDER_IN_TURN))
+        if self.custom_order_var.get() not in CUSTOM_ORDERS:
+            self.custom_order_var.set(CUSTOM_ORDER_IN_TURN)
         self.video_quality_var = ctk.StringVar(value=find_video_quality_mode(settings))
         self.crf_var = ctk.StringVar(value=valid_number_or(settings.get("crf"), str(RECOMMENDED_CRF), MAX_CRF))
         self.bitrate_var = ctk.StringVar(value=valid_number_or(settings.get("bitrate_kbps"), "8000", MAX_BITRATE_KBPS))
@@ -96,15 +143,25 @@ class WatermarkApp:
         self.normalize_audio_var = ctk.BooleanVar(value=bool(settings.get("normalize_audio", False)))
         self.loudness_preset_var = ctk.StringVar(value=find_loudness_preset(settings.get("loudness_preset")))
 
-        # Save the settings whenever any of them changes
+        # Save the settings whenever any of them changes. Shared motion variables are listed
+        # once (by id, as Tk variables can't be hashed), so a change saves the settings once
+        motion_vars = {
+            id(var): var
+            for groups in (self.motion_vars, self.custom_motion_vars, self.custom_motion_state)
+            for group in groups.values()
+            for var in group.values()
+        }.values()
         for var in (self.raw_videos_var, self.output_folder_var, self.watermark_image_var,
                     self.width_var, self.height_var, self.keep_ratio_var, self.opacity_var,
-                    self.motion_var, self.travel_time_var, self.start_position_var, self.random_start_var,
-                    self.bounce_speed_var, self.horizontal_start_var, self.random_horizontal_start_var,
-                    self.position_change_var, self.video_quality_var, self.crf_var, self.bitrate_var,
+                    self.motion_var, self.custom_order_var, *motion_vars,
+                    self.video_quality_var, self.crf_var, self.bitrate_var,
                     self.gpu_qp_var, self.gpu_qp_encoder_var,
                     self.codec_var, self.use_gpu_var, self.normalize_audio_var, self.loudness_preset_var):
             var.trace_add("write", self._save_settings)
+
+        # Pause/stop control of the current rendering, None when idle
+        self.control = None
+        self.paused = False
 
         self.status_var = ctk.StringVar(value="Ready")
         self.video_percent_var = ctk.StringVar(value="0%")
@@ -161,73 +218,38 @@ class WatermarkApp:
         motion_menu.grid(row=6, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.input_buttons.append(motion_menu)
 
-        # Settings of only one motion share a row with those of the other one; _update_motion_fields()
-        # shows the right ones. Top to bottom: the time to travel from the top to the bottom of the video
-        travel_time_label = ctk.CTkLabel(frame, text="Travel time:")
-        travel_time_label.grid(row=7, column=0, sticky="w", padx=10, pady=2)
-        travel_time_row = ctk.CTkFrame(frame, fg_color="transparent")
-        travel_time_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_number_field(travel_time_row, self.travel_time_var, MAX_TRAVEL_TIME_SECONDS)
-        ctk.CTkLabel(
-            travel_time_row,
-            text=f"seconds from top to bottom (max: {MAX_TRAVEL_TIME_SECONDS})"
-        ).grid(row=0, column=2, padx=(5, 0))
+        # Rows of the motion settings; _update_motion_fields() shows those of the chosen motion.
+        # A motion chosen on its own: its settings right below the menu, in the same rows for each motion
+        self.motion_widgets = {
+            motion: self._add_motion_rows(frame, 7, motion, self.motion_vars[motion]) for motion in MOTION_FIELDS
+        }
 
-        # Bounce: the speed as a percentage of the video height per second, the same
-        # in pixels on both axes, so it looks the same for any resolution
-        speed_label = ctk.CTkLabel(frame, text="Speed:")
-        speed_label.grid(row=7, column=0, sticky="w", padx=10, pady=2)
-        speed_row = ctk.CTkFrame(frame, fg_color="transparent")
-        speed_row.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_number_field(speed_row, self.bounce_speed_var, MAX_BOUNCE_SPEED_PERCENT)
-        ctk.CTkLabel(
-            speed_row,
-            text=f"% of video height per second (max: {MAX_BOUNCE_SPEED_PERCENT})"
-        ).grid(row=0, column=2, padx=(5, 0))
-
-        # Vertical position of the watermark at the start of each video, as a percentage
-        # of its travel from the top, so it means the same for any resolution; or a random one
-        self.start_position_label = ctk.CTkLabel(frame)
-        self.start_position_label.grid(row=8, column=0, sticky="w", padx=10, pady=2)
-        start_position_row = ctk.CTkFrame(frame, fg_color="transparent")
-        start_position_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_auto_field(
-            start_position_row, self.start_position_var, MAX_PERCENT, f"% from the top (0 = top, {MAX_PERCENT} = bottom)",
-            self.random_start_var, "Random for each video", "random", allow_zero=True
+        # Custom: how the videos pick a motion, then a collapsible section for each motion
+        # with its header (name, whether it's used, its number in turn) and its own settings
+        self.custom_order_label = ctk.CTkLabel(frame, text="Motion order:")
+        self.custom_order_label.grid(row=7, column=0, sticky="w", padx=10, pady=2)
+        self.custom_order_menu = ctk.CTkOptionMenu(
+            frame,
+            variable=self.custom_order_var,
+            values=list(CUSTOM_ORDERS),
+            width=260,
+            command=lambda order: self._update_motion_fields()
         )
-
-        # Top to bottom: how often the watermark jumps to a new random horizontal position
-        position_change_label = ctk.CTkLabel(frame, text="Position change:")
-        position_change_label.grid(row=9, column=0, sticky="w", padx=10, pady=2)
-        position_change_row = ctk.CTkFrame(frame, fg_color="transparent")
-        position_change_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_number_field(position_change_row, self.position_change_var, MAX_POSITION_CHANGE_SECONDS)
-        ctk.CTkLabel(
-            position_change_row,
-            text=f"seconds between horizontal jumps (max: {MAX_POSITION_CHANGE_SECONDS})"
-        ).grid(row=0, column=2, padx=(5, 0))
-
-        # Bounce: horizontal position at the start of each video, as a percentage of
-        # the travel from the left; or a random one
-        horizontal_start_label = ctk.CTkLabel(frame, text="Horizontal start:")
-        horizontal_start_label.grid(row=9, column=0, sticky="w", padx=10, pady=2)
-        horizontal_start_row = ctk.CTkFrame(frame, fg_color="transparent")
-        horizontal_start_row.grid(row=9, column=1, columnspan=2, sticky="w", padx=5, pady=2)
-        self._add_auto_field(
-            horizontal_start_row, self.horizontal_start_var, MAX_PERCENT,
-            f"% from the left (0 = left, {MAX_PERCENT} = right)",
-            self.random_horizontal_start_var, "Random for each video", "random", allow_zero=True
-        )
-
-        # Widgets shown only for one motion
-        self.top_to_bottom_widgets = (travel_time_label, travel_time_row, position_change_label, position_change_row)
-        self.bounce_widgets = (speed_label, speed_row, horizontal_start_label, horizontal_start_row)
+        self.custom_order_menu.grid(row=7, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.input_buttons.append(self.custom_order_menu)
+        self.custom_sections = {}
+        row = 8
+        for motion in CUSTOM_MOTION_KEYS:
+            header = self._add_custom_motion_header(frame, row, motion)
+            rows = self._add_motion_rows(frame, row + 1, motion, self.custom_motion_vars[motion], indent=True)
+            self.custom_sections[motion] = {"header": header, "rows": rows}
+            row += 1 + len(MOTION_FIELDS[motion])
         self._update_motion_fields()
 
         # Video codec: H.264, HEVC or AV1
-        ctk.CTkLabel(frame, text="Video codec:").grid(row=10, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Video codec:").grid(row=20, column=0, sticky="w", padx=10, pady=2)
         codec_row = ctk.CTkFrame(frame, fg_color="transparent")
-        codec_row.grid(row=10, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        codec_row.grid(row=20, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         codec_menu = ctk.CTkOptionMenu(
             codec_row,
             variable=self.codec_var,
@@ -249,7 +271,7 @@ class WatermarkApp:
         self.input_buttons.append(gpu_checkbox)
 
         # Video quality: constant quality (CRF), the bitrate of each original video, or a custom bitrate
-        ctk.CTkLabel(frame, text="Video quality:").grid(row=11, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Video quality:").grid(row=21, column=0, sticky="w", padx=10, pady=2)
         # The menu shows display names: the constant quality mode reads "(QP)" while a video
         # card encodes; video_quality_var keeps the mode itself, as saved in the settings
         self.quality_menu = ctk.CTkOptionMenu(
@@ -258,14 +280,14 @@ class WatermarkApp:
             width=220,
             command=self._select_quality_mode
         )
-        self.quality_menu.grid(row=11, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.quality_menu.grid(row=21, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.input_buttons.append(self.quality_menu)
 
         # Value of the chosen quality mode: the CRF or the bitrate field, in the same place
         self.quality_value_label_var = ctk.StringVar()
-        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=12, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, textvariable=self.quality_value_label_var).grid(row=22, column=0, sticky="w", padx=10, pady=2)
         self.crf_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.crf_row.grid(row=12, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.crf_row.grid(row=22, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.crf_row, self.crf_var, MAX_CRF)
         ctk.CTkLabel(
             self.crf_row,
@@ -274,12 +296,12 @@ class WatermarkApp:
         # QP of the video card, shown instead of the CRF when it encodes the video;
         # its highest value depends on the encoder
         self.gpu_qp_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.gpu_qp_row.grid(row=12, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.gpu_qp_row.grid(row=22, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self._add_number_field(self.gpu_qp_row, self.gpu_qp_var, lambda: self.gpu_qp_max)
         self.gpu_qp_hint_var = ctk.StringVar()
         ctk.CTkLabel(self.gpu_qp_row, textvariable=self.gpu_qp_hint_var).grid(row=0, column=2, padx=(5, 0))
         self.bitrate_row = ctk.CTkFrame(frame, fg_color="transparent")
-        self.bitrate_row.grid(row=12, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        self.bitrate_row.grid(row=22, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         self.bitrate_field = self._add_auto_field(
             self.bitrate_row, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
             self.original_bitrate_var, None, "original"
@@ -287,9 +309,9 @@ class WatermarkApp:
         self._update_quality_fields()
 
         # Audio normalization: off, or a loudness preset of a platform or standard
-        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=13, column=0, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(frame, text="Audio normalization:").grid(row=23, column=0, sticky="w", padx=10, pady=2)
         loudness_row = ctk.CTkFrame(frame, fg_color="transparent")
-        loudness_row.grid(row=13, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+        loudness_row.grid(row=23, column=1, columnspan=2, sticky="w", padx=5, pady=2)
         normalize_checkbox = ctk.CTkCheckBox(
             loudness_row,
             text="Normalize",
@@ -319,10 +341,6 @@ class WatermarkApp:
         self.pause_button.grid(row=0, column=1, padx=5)
         self.stop_button = ctk.CTkButton(buttons, text="Stop", width=100, state="disabled", command=self._stop)
         self.stop_button.grid(row=0, column=2, padx=5)
-
-        # Pause/stop control of the current rendering, None when idle
-        self.control = None
-        self.paused = False
 
         # Closing the window while rendering works like Stop
         self.closing = False
@@ -371,6 +389,13 @@ class WatermarkApp:
         )
 
     def _save_settings(self, *args):
+        # Motion settings: those of a motion on its own under their names, the custom ones with a prefix
+        motion_settings = {}
+        for motion_vars in self.motion_vars.values():
+            motion_settings.update({name: var.get() for name, var in motion_vars.items()})
+        for motion, key in CUSTOM_MOTION_KEYS.items():
+            for group in (self.custom_motion_vars[motion], self.custom_motion_state[motion]):
+                motion_settings.update({f"custom_{key}_{name}": var.get() for name, var in group.items()})
         save_settings({
             "raw_videos_path": self.raw_videos_var.get(),
             "output_folder_path": self.output_folder_var.get(),
@@ -379,14 +404,9 @@ class WatermarkApp:
             "height_percent": self.height_var.get(),
             "keep_aspect_ratio": self.keep_ratio_var.get(),
             "opacity_percent": self.opacity_var.get(),
-            "travel_time_seconds": self.travel_time_var.get(),
             "watermark_motion": self.motion_var.get(),
-            "start_position_percent": self.start_position_var.get(),
-            "random_start_position": self.random_start_var.get(),
-            "bounce_speed_percent": self.bounce_speed_var.get(),
-            "horizontal_start_percent": self.horizontal_start_var.get(),
-            "random_horizontal_start": self.random_horizontal_start_var.get(),
-            "position_change_seconds": self.position_change_var.get(),
+            "custom_motion_order": self.custom_order_var.get(),
+            **motion_settings,
             "video_quality": self.video_quality_var.get(),
             "crf": self.crf_var.get(),
             "gpu_qp": self.gpu_qp_var.get(),
@@ -531,19 +551,124 @@ class WatermarkApp:
             self.original_bitrate_var.set(mode == QUALITY_ORIGINAL_BITRATE)
             self._update_auto_field(self.bitrate_field)
 
-    def _update_motion_fields(self):
-        # Show only the settings of the chosen motion
-        bounce = self.motion_var.get() == MOTION_BOUNCE
-        shown, hidden = (
-            (self.bounce_widgets, self.top_to_bottom_widgets) if bounce
-            else (self.top_to_bottom_widgets, self.bounce_widgets)
+    def _load_motion_vars(self, settings, motion, prefix):
+        # Variables of the settings of a motion, restored from the settings saved as prefix + field name
+        motion_vars = {}
+        for field in MOTION_FIELDS[motion]:
+            motion_vars[field["name"]] = ctk.StringVar(value=valid_number_or(
+                settings.get(prefix + field["name"]), str(field["default"]), field["max"], allow_zero="random" in field
+            ))
+            if "random" in field:
+                motion_vars[field["random"]] = ctk.BooleanVar(
+                    value=bool(settings.get(prefix + field["random"], field["random_default"]))
+                )
+        return motion_vars
+
+    def _add_motion_rows(self, frame, row, motion, motion_vars, indent=False):
+        # Rows of the settings of a motion from row on, indented under a custom section header;
+        # returns their widgets, to show or hide them, and their fields with a random checkbox
+        widgets = []
+        auto_fields = []
+        for i, field in enumerate(MOTION_FIELDS[motion]):
+            label = ctk.CTkLabel(frame, text=field["label"] + ":")
+            label.grid(row=row + i, column=0, sticky="w", padx=(30 if indent else 10, 10), pady=2)
+            field_row = ctk.CTkFrame(frame, fg_color="transparent")
+            field_row.grid(row=row + i, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+            if "random" in field:
+                auto_fields.append(self._add_auto_field(
+                    field_row, motion_vars[field["name"]], field["max"], field["hint"],
+                    motion_vars[field["random"]], "Random for each video", "random", allow_zero=True
+                ))
+            else:
+                self._add_number_field(field_row, motion_vars[field["name"]], field["max"])
+                ctk.CTkLabel(field_row, text=field["hint"]).grid(row=0, column=2, padx=(5, 0))
+            widgets += [label, field_row]
+        return {"widgets": widgets, "auto_fields": auto_fields}
+
+    def _add_custom_motion_header(self, frame, row, motion):
+        # Header of a motion's section in the custom motion: a button that shows or hides its settings,
+        # whether the motion is used, and its number in turn
+        state = self.custom_motion_state[motion]
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.grid(row=row, column=0, columnspan=3, sticky="ew", padx=5, pady=(6, 2))
+        # Not locked while rendering: it only shows or hides the settings
+        toggle = ctk.CTkButton(
+            header,
+            fg_color="transparent",
+            hover_color=SECTION_HOVER_COLOR,
+            text_color=ctk.ThemeManager.theme["CTkLabel"]["text_color"],
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w",
+            width=260,
+            command=lambda: self._toggle_custom_section(motion)
         )
-        for widget in hidden:
+        toggle.grid(row=0, column=0)
+        use_checkbox = ctk.CTkCheckBox(header, text="Use", variable=state["use"], command=self._update_motion_fields)
+        use_checkbox.grid(row=0, column=1, padx=(10, 0))
+        self.input_buttons.append(use_checkbox)
+        ctk.CTkLabel(header, text="Number in turn:").grid(row=0, column=2, padx=(20, 5))
+        order_menu = ctk.CTkOptionMenu(
+            header,
+            variable=state["order"],
+            values=[str(n) for n in range(1, len(CUSTOM_MOTION_KEYS) + 1)],
+            width=70,
+            command=lambda number: self._set_custom_order(motion)
+        )
+        order_menu.grid(row=0, column=3)
+        self.input_buttons.append(order_menu)
+        return {"frame": header, "toggle": toggle, "order_menu": order_menu}
+
+    def _toggle_custom_section(self, motion):
+        expanded = self.custom_motion_state[motion]["expanded"]
+        expanded.set(not expanded.get())
+        self._update_motion_fields()
+
+    def _set_custom_order(self, motion):
+        # The motion that had the chosen number takes the number left free, so the numbers don't repeat
+        number = self.custom_motion_state[motion]["order"].get()
+        free = {str(n) for n in range(1, len(CUSTOM_MOTION_KEYS) + 1)}
+        free -= {state["order"].get() for state in self.custom_motion_state.values()}
+        for other, state in self.custom_motion_state.items():
+            if other != motion and state["order"].get() == number and free:
+                state["order"].set(free.pop())
+
+    def _update_motion_fields(self):
+        # Show only the settings of the chosen motion: its rows when it's on its own,
+        # or the custom order and the sections of the mixed motions, with the settings of the expanded ones
+        motion = self.motion_var.get()
+        custom_widgets = [self.custom_order_label, self.custom_order_menu]
+        for section in self.custom_sections.values():
+            custom_widgets += [section["header"]["frame"], *section["rows"]["widgets"]]
+        for widget in [*custom_widgets, *(w for rows in self.motion_widgets.values() for w in rows["widgets"])]:
             widget.grid_remove()
-        for widget in shown:
-            widget.grid()
-        # The bounce motion has a horizontal start too, so name this one vertical
-        self.start_position_label.configure(text="Vertical start:" if bounce else "Start position:")
+
+        if motion in self.motion_widgets:
+            for widget in self.motion_widgets[motion]["widgets"]:
+                widget.grid()
+        else:
+            self.custom_order_label.grid()
+            self.custom_order_menu.grid()
+            for custom_motion, section in self.custom_sections.items():
+                expanded = self.custom_motion_state[custom_motion]["expanded"].get()
+                section["header"]["toggle"].configure(text=f"{'▼' if expanded else '▶'}  {custom_motion}")
+                section["header"]["frame"].grid()
+                if expanded:
+                    for widget in section["rows"]["widgets"]:
+                        widget.grid()
+        self._update_custom_controls()
+
+    def _update_custom_controls(self):
+        # While idle, refresh the fields with a random checkbox (motions on their own share theirs,
+        # so a field may be out of date) and allow a number in turn only where it's used
+        if self.control is not None:
+            return
+        for rows in [*self.motion_widgets.values(), *(section["rows"] for section in self.custom_sections.values())]:
+            for field in rows["auto_fields"]:
+                self._update_auto_field(field)
+        in_turn = self.custom_order_var.get() == CUSTOM_ORDER_IN_TURN
+        for motion, section in self.custom_sections.items():
+            used = self.custom_motion_state[motion]["use"].get()
+            section["header"]["order_menu"].configure(state="normal" if in_turn and used else "disabled")
 
     def _update_auto_field(self, field):
         # The custom value is only used when the checkbox is off.
@@ -571,6 +696,23 @@ class WatermarkApp:
             messagebox.showerror("Error", f"{name} must be a number {lowest} up to {format_number(max_value)}.")
             return None
         return number
+
+    def _parse_motion_settings(self, motion, motion_vars, name_prefix):
+        # Returns the add_watermark() settings of the motion from its fields, or None after showing
+        # an error; a field with its random checkbox on gives None, a random value for each video
+        settings = {"motion": motion}
+        for field in MOTION_FIELDS[motion]:
+            if "random" in field and motion_vars[field["random"]].get():
+                settings[field["name"]] = None
+                continue
+            number = self._parse_number(
+                motion_vars[field["name"]].get(), name_prefix + field["label"], field["max"],
+                allow_zero="random" in field
+            )
+            if number is None:
+                return None
+            settings[field["name"]] = number
+        return settings
 
     def _set_bar(self, bar, value):
         # customtkinter still draws a small rounded stub at 0,
@@ -631,6 +773,10 @@ class WatermarkApp:
             self._update_loudness_menu()
         else:
             self.loudness_menu.configure(state="disabled")
+
+        # The numbers in turn of the custom motion also depend on the order and the "Use" checkboxes
+        if enabled:
+            self._update_custom_controls()
 
     def _check_gpu(self):
         # Show which encoder the chosen codec will use; when "Use GPU" is on,
@@ -727,44 +873,30 @@ class WatermarkApp:
         if opacity_percent is None:
             return
 
-        # Validate the settings of the chosen motion; the hidden ones of the other motion aren't used
+        # Validate the settings of the chosen motion; the hidden ones of the other motions aren't used
         motion = self.motion_var.get()
-        travel_time_seconds = None
-        position_change_seconds = DEFAULT_POSITION_CHANGE_SECONDS
-        bounce_speed_percent = DEFAULT_BOUNCE_SPEED_PERCENT
-        horizontal_start_percent = None
-        if motion == MOTION_BOUNCE:
-            bounce_speed_percent = self._parse_number(self.bounce_speed_var.get(), "Speed", MAX_BOUNCE_SPEED_PERCENT)
-            if bounce_speed_percent is None:
+        random_motion_order = False
+        if motion in self.motion_vars:
+            motion_settings = self._parse_motion_settings(motion, self.motion_vars[motion], "")
+            if motion_settings is None:
                 return
-            # None picks a random horizontal start for each video
-            if not self.random_horizontal_start_var.get():
-                horizontal_start_percent = self._parse_number(
-                    self.horizontal_start_var.get(), "Horizontal start", MAX_PERCENT, allow_zero=True
+            motions = [motion_settings]
+        else:
+            # Custom: the used motions in turn by their numbers, or each video takes a random one
+            used = [m for m in CUSTOM_MOTION_KEYS if self.custom_motion_state[m]["use"].get()]
+            if not used:
+                messagebox.showerror("Error", "Custom motion: turn on \"Use\" for at least one motion.")
+                return
+            used.sort(key=lambda m: int(self.custom_motion_state[m]["order"].get()))
+            motions = []
+            for custom_motion in used:
+                motion_settings = self._parse_motion_settings(
+                    custom_motion, self.custom_motion_vars[custom_motion], f"{custom_motion}: "
                 )
-                if horizontal_start_percent is None:
+                if motion_settings is None:
                     return
-        else:
-            travel_time_seconds = self._parse_number(self.travel_time_var.get(), "Travel time", MAX_TRAVEL_TIME_SECONDS)
-            if travel_time_seconds is None:
-                return
-            # How often the watermark changes its horizontal position
-            position_change_seconds = self._parse_number(
-                self.position_change_var.get(), "Position change", MAX_POSITION_CHANGE_SECONDS
-            )
-            if position_change_seconds is None:
-                return
-
-        # Validate the vertical start position; None picks a random one for each video
-        if self.random_start_var.get():
-            start_position_percent = None
-        else:
-            start_position_percent = self._parse_number(
-                self.start_position_var.get(), self.start_position_label.cget("text").rstrip(":"), MAX_PERCENT,
-                allow_zero=True
-            )
-            if start_position_percent is None:
-                return
+                motions.append(motion_settings)
+            random_motion_order = self.custom_order_var.get() == CUSTOM_ORDER_RANDOM
 
         # Validate the video quality: a CRF, or a bitrate (None keeps the bitrate of each original video)
         mode = self.video_quality_var.get()
@@ -808,8 +940,7 @@ class WatermarkApp:
         thread = threading.Thread(
             target=self._process,
             args=(raw_videos_path, output_folder_path, watermark_image_path, self.control,
-                  width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
-                  start_position_percent, motion, bounce_speed_percent, horizontal_start_percent,
+                  width_percent, height_percent, opacity_percent, motions, random_motion_order,
                   bitrate_kbps, target_lufs, crf,
                   self.use_gpu_var.get(), self.codec_var.get(), qp),
             daemon=True
@@ -862,8 +993,7 @@ class WatermarkApp:
         self._set_video_stage(None)
 
     def _process(self, raw_videos_path, output_folder_path, watermark_image_path, control,
-                 width_percent, height_percent, opacity_percent, travel_time_seconds, position_change_seconds,
-                 start_position_percent, motion, bounce_speed_percent, horizontal_start_percent,
+                 width_percent, height_percent, opacity_percent, motions, random_motion_order,
                  bitrate_kbps, target_lufs, crf,
                  use_gpu, codec, qp):
         try:
@@ -877,12 +1007,8 @@ class WatermarkApp:
                 width_percent=width_percent,
                 height_percent=height_percent,
                 opacity_percent=opacity_percent,
-                travel_time_seconds=travel_time_seconds,
-                position_change_seconds=position_change_seconds,
-                start_position_percent=start_position_percent,
-                motion=motion,
-                bounce_speed_percent=bounce_speed_percent,
-                horizontal_start_percent=horizontal_start_percent,
+                motions=motions,
+                random_motion_order=random_motion_order,
                 bitrate_kbps=bitrate_kbps,
                 target_lufs=target_lufs,
                 crf=crf,

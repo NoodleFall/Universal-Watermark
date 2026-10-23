@@ -1,10 +1,9 @@
 import os
+import random
 
 from constants import (
     CODEC_CONTAINERS,
     CODEC_H264,
-    DEFAULT_BOUNCE_SPEED_PERCENT,
-    DEFAULT_POSITION_CHANGE_SECONDS,
     MOTION_TOP_TO_BOTTOM,
     OUTPUT_EXTENSION_OVERRIDES,
     VIDEO_EXTENSIONS,
@@ -30,17 +29,23 @@ def get_output_video_path(output_folder_path, video_file, video_files, codec=COD
 
 
 def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
-         width_percent=50, height_percent=None, opacity_percent=33, travel_time_seconds=30, bitrate_kbps=None,
-         position_change_seconds=DEFAULT_POSITION_CHANGE_SECONDS, start_position_percent=0,
-         motion=MOTION_TOP_TO_BOTTOM, bounce_speed_percent=DEFAULT_BOUNCE_SPEED_PERCENT,
-         horizontal_start_percent=None,
+         width_percent=50, height_percent=None, opacity_percent=33, bitrate_kbps=None,
+         motions=None, random_motion_order=False,
          target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None):
+    # motions: watermark motions to use, each a dict of the motion settings of add_watermark(),
+    # e.g. {"motion": MOTION_BOUNCE, "bounce_speed_percent": 10}; the videos take them in turn,
+    # or each video takes a random one with random_motion_order. By default, all videos move top to bottom
+    if not motions:
+        motions = [{"motion": MOTION_TOP_TO_BOTTOM}]
+
     # Create the output folder for watermarked videos if it doesn't exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
 
-    # Get a list of all video files in the folder
-    video_files = [f for f in os.listdir(raw_videos_path) if f.lower().endswith(VIDEO_EXTENSIONS)]
+    # Get a list of all video files in the folder, by name, so the motions go in turn in a predictable order
+    video_files = sorted(
+        (f for f in os.listdir(raw_videos_path) if f.lower().endswith(VIDEO_EXTENSIONS)), key=str.lower
+    )
 
     def report_video_progress(stage, percent):
         # Show the progress of the current stage in the console and report it to the caller (e.g. the GUI)
@@ -62,6 +67,9 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
         output_video_path = get_output_video_path(output_folder_path, video_file, video_files, codec)
 
         print(f"Processing video: {video_file}")
+        motion_settings = random.choice(motions) if random_motion_order else motions[i % len(motions)]
+        if len(motions) > 1:
+            print(f"Watermark motion: {motion_settings['motion']}")
         try:
             add_watermark(
                 input_video_path,
@@ -70,12 +78,7 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
                 width_percent=width_percent,
                 height_percent=height_percent,
                 opacity_percent=opacity_percent,
-                travel_time_seconds=travel_time_seconds,
-                position_change_seconds=position_change_seconds,
-                start_position_percent=start_position_percent,
-                motion=motion,
-                bounce_speed_percent=bounce_speed_percent,
-                horizontal_start_percent=horizontal_start_percent,
+                **motion_settings,
                 bitrate_kbps=bitrate_kbps,
                 target_lufs=target_lufs,
                 crf=crf,
