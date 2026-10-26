@@ -1,4 +1,5 @@
-import customtkinter as ctk
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QToolButton
 
 from constants import (
     CUSTOM_ORDER_IN_TURN,
@@ -14,12 +15,21 @@ from constants import (
     MOTION_BOUNCE,
     MOTION_KEYS,
     MOTION_TOP_TO_BOTTOM,
-    SECTION_HOVER_COLOR,
     WATERMARK_MOTIONS,
 )
-from ui.fields import AutoNumberField, NumberField, add_setting_row
+from ui.fields import (
+    MENU_MIN_WIDTH,
+    AutoNumberField,
+    NumberField,
+    add_setting_row,
+    bind_checkbox,
+    bind_combo,
+    make_card,
+    make_inputs,
+)
 from ui.number_input import InvalidInput, parse_field, valid_number_or
 from ui.settings import find_watermark_motion
+from ui.var import Var
 
 # Fields of the settings of each motion, in their order on screen. name: setting of add_watermark();
 # random: name of the checkbox that picks a random value instead (such fields accept zero),
@@ -72,13 +82,11 @@ class MotionSettings:
 
         self.vars = {}
         for field in self.fields:
-            self.vars[field["name"]] = ctk.StringVar(value=valid_number_or(
+            self.vars[field["name"]] = Var(valid_number_or(
                 saved_value(field["name"]), str(field["default"]), field["max"], allow_zero="random" in field
             ))
             if "random" in field:
-                self.vars[field["random"]] = ctk.BooleanVar(
-                    value=bool(saved_value(field["random"], field["random_default"]))
-                )
+                self.vars[field["random"]] = Var(bool(saved_value(field["random"], field["random_default"])))
 
     def variables(self):
         return list(self.vars.values())
@@ -102,35 +110,26 @@ class MotionSettings:
 
 
 class MotionRows:
-    """Rows of the fields of a motion's settings in the settings grid, from row on; can be shown or hidden."""
+    """Rows of the fields of a motion's settings, added to the end of form; can be shown or hidden."""
 
-    def __init__(self, frame, row, lock, motion_settings, indent=False):
-        self.widgets = []
-        self.auto_fields = []
-        for i, field in enumerate(motion_settings.fields):
-            label, inputs = add_setting_row(frame, row + i, field["label"] + ":", indent)
+    def __init__(self, form, lock, motion_settings, indent=False):
+        self.form = form
+        self.rows = []
+        for field in motion_settings.fields:
+            _, inputs = add_setting_row(form, field["label"] + ":", indent)
             variable = motion_settings.vars[field["name"]]
             if "random" in field:
-                self.auto_fields.append(AutoNumberField(
+                AutoNumberField(
                     inputs, lock, variable, field["max"], field["hint"],
                     motion_settings.vars[field["random"]], "Random for each video", "random", allow_zero=True
-                ))
+                )
             else:
                 NumberField(inputs, lock, variable, field["max"], field["hint"])
-            self.widgets += [label, inputs]
-        self.row_count = len(motion_settings.fields)
+            self.rows.append(inputs)
 
     def show(self, shown=True):
-        for widget in self.widgets:
-            if shown:
-                widget.grid()
-            else:
-                widget.grid_remove()
-
-    def refresh(self):
-        # The same settings are shown in two places, so a hidden random field may be out of date
-        for field in self.auto_fields:
-            field.update()
+        for inputs in self.rows:
+            self.form.setRowVisible(inputs, shown)
 
 
 class CustomMotionSection:
@@ -140,45 +139,50 @@ class CustomMotionSection:
     The state is saved as e.g. "custom_bounce_use".
     """
 
-    def __init__(self, frame, row, lock, motion_settings, number, saved, on_change, on_order_change):
+    def __init__(self, form, lock, motion_settings, number, saved, on_change, on_order_change):
+        self.form = form
         self.motion = motion_settings.motion
         self.prefix = f"custom_{MOTION_KEYS[self.motion]}_"
         self.vars = {
-            "use": ctk.BooleanVar(value=bool(saved.get(self.prefix + "use", True))),
-            "order": ctk.StringVar(value=str(saved.get(self.prefix + "order", number))),
-            "expanded": ctk.BooleanVar(value=bool(saved.get(self.prefix + "expanded", True))),
+            "use": Var(bool(saved.get(self.prefix + "use", True))),
+            "order": Var(str(saved.get(self.prefix + "order", number))),
+            "expanded": Var(bool(saved.get(self.prefix + "expanded", True))),
         }
 
-        self.header = ctk.CTkFrame(frame, fg_color="transparent")
-        self.header.grid(row=row, column=0, columnspan=3, sticky="ew", padx=5, pady=(6, 2))
+        self.header = make_inputs()
+        header = self.header.layout()
+        header.setContentsMargins(0, 6, 0, 0)
         # Not locked while rendering: it only shows or hides the settings
-        self.toggle = ctk.CTkButton(
-            self.header,
-            fg_color="transparent",
-            hover_color=SECTION_HOVER_COLOR,
-            text_color=ctk.ThemeManager.theme["CTkLabel"]["text_color"],
-            font=ctk.CTkFont(weight="bold"),
-            anchor="w",
-            width=260,
-            command=self._toggle
-        )
-        self.toggle.grid(row=0, column=0)
-        self._on_change = on_change
-        use_checkbox = ctk.CTkCheckBox(self.header, text="Use", variable=self.vars["use"], command=on_change)
-        use_checkbox.grid(row=0, column=1, padx=(10, 0))
-        ctk.CTkLabel(self.header, text="Number in turn:").grid(row=0, column=2, padx=(20, 5))
-        self.order_menu = ctk.CTkOptionMenu(
-            self.header,
-            variable=self.vars["order"],
-            values=[str(n) for n in range(1, len(MOTION_KEYS) + 1)],
-            width=70,
-            command=lambda number: on_order_change(self)
-        )
-        self.order_menu.grid(row=0, column=3)
-        lock.add(use_checkbox, self.order_menu)
+        self.toggle = QToolButton()
+        self.toggle.setObjectName("sectionToggle")
+        self.toggle.setText(self.motion)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setAutoRaise(True)
+        self.toggle.setMinimumWidth(MENU_MIN_WIDTH)
+        font = self.toggle.font()
+        font.setBold(True)
+        self.toggle.setFont(font)
+        self.toggle.clicked.connect(self._toggle)
+        header.addWidget(self.toggle)
 
-        self.rows = MotionRows(frame, row + 1, lock, motion_settings, indent=True)
-        self.row_count = 1 + self.rows.row_count
+        use_checkbox = QCheckBox("Use")
+        bind_checkbox(use_checkbox, self.vars["use"])
+        header.addSpacing(10)
+        header.addWidget(use_checkbox)
+        header.addSpacing(20)
+        header.addWidget(QLabel("Number in turn:"))
+        self.order_menu = QComboBox()
+        self.order_menu.addItems([str(n) for n in range(1, len(MOTION_KEYS) + 1)])
+        bind_combo(self.order_menu, self.vars["order"])
+        # Only a number the user picks moves the other sections' numbers, not one set from the code
+        self.order_menu.activated.connect(lambda index: on_order_change(self))
+        header.addWidget(self.order_menu)
+        lock.add(use_checkbox, self.order_menu)
+        form.addRow(self.header)
+
+        self.vars["use"].changed.connect(on_change)
+        self.vars["expanded"].changed.connect(on_change)
+        self.rows = MotionRows(form, lock, motion_settings, indent=True)
 
     @property
     def used(self):
@@ -190,20 +194,16 @@ class CustomMotionSection:
 
     def _toggle(self):
         self.vars["expanded"].set(not self.vars["expanded"].get())
-        self._on_change()
 
     def show(self, shown=True):
         expanded = self.vars["expanded"].get()
-        self.toggle.configure(text=f"{'▼' if expanded else '▶'}  {self.motion}")
-        if shown:
-            self.header.grid()
-        else:
-            self.header.grid_remove()
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.form.setRowVisible(self.header, shown)
         self.rows.show(shown and expanded)
 
     def update_order_menu(self, in_turn):
         # A number in turn is only needed when the motions go in turn and this one is used
-        self.order_menu.configure(state="normal" if in_turn and self.used else "disabled")
+        self.order_menu.setEnabled(in_turn and self.used)
 
     def variables(self):
         return list(self.vars.values())
@@ -216,51 +216,49 @@ class MotionSection:
     """
     How the watermark moves: the motion menu, then the settings of the chosen motion right
     below it, or for the custom motion how the videos pick a motion and a section for each
-    motion it mixes. Rows from row on in the settings grid; next_row is the first one after them.
+    motion it mixes. Shown in its own card.
     """
 
-    def __init__(self, frame, row, lock, saved):
+    def __init__(self, lock, saved):
         self.lock = lock
-        self.motion_var = ctk.StringVar(value=find_watermark_motion(saved.get("watermark_motion")))
+        self.motion_var = Var(find_watermark_motion(saved.get("watermark_motion")))
         self.motion_settings = {motion: MotionSettings(motion, saved) for motion in MOTION_FIELDS}
+        self.card, self.form = make_card("Motion")
 
-        label, inputs = add_setting_row(frame, row, "Motion:")
-        motion_menu = ctk.CTkOptionMenu(
-            inputs, variable=self.motion_var, values=list(WATERMARK_MOTIONS), width=260,
-            command=lambda motion: self.update()
-        )
-        motion_menu.grid(row=0, column=0)
+        _, inputs = add_setting_row(self.form, "Motion:")
+        motion_menu = QComboBox()
+        motion_menu.addItems(list(WATERMARK_MOTIONS))
+        motion_menu.setMinimumWidth(MENU_MIN_WIDTH)
+        bind_combo(motion_menu, self.motion_var)
+        inputs.layout().addWidget(motion_menu)
         lock.add(motion_menu)
-        row += 1
 
-        # A motion on its own: its settings in the same rows for each motion
+        # A motion on its own: its settings right below the menu
         self.motion_rows = {
-            motion: MotionRows(frame, row, lock, settings) for motion, settings in self.motion_settings.items()
+            motion: MotionRows(self.form, lock, settings) for motion, settings in self.motion_settings.items()
         }
 
         # Custom: how the videos pick a motion, then the sections of the motions it mixes
-        self.custom_order_var = ctk.StringVar(value=saved.get("custom_motion_order", CUSTOM_ORDER_IN_TURN))
+        self.custom_order_var = Var(saved.get("custom_motion_order", CUSTOM_ORDER_IN_TURN))
         if self.custom_order_var.get() not in CUSTOM_ORDERS:
             self.custom_order_var.set(CUSTOM_ORDER_IN_TURN)
-        self.custom_order_label, inputs = add_setting_row(frame, row, "Motion order:")
-        self.custom_order_inputs = inputs
-        custom_order_menu = ctk.CTkOptionMenu(
-            inputs, variable=self.custom_order_var, values=list(CUSTOM_ORDERS), width=260,
-            command=lambda order: self.update()
-        )
-        custom_order_menu.grid(row=0, column=0)
+        _, self.custom_order_inputs = add_setting_row(self.form, "Motion order:")
+        custom_order_menu = QComboBox()
+        custom_order_menu.addItems(list(CUSTOM_ORDERS))
+        custom_order_menu.setMinimumWidth(MENU_MIN_WIDTH)
+        bind_combo(custom_order_menu, self.custom_order_var)
+        self.custom_order_inputs.layout().addWidget(custom_order_menu)
         lock.add(custom_order_menu)
-        row += 1
-        self.custom_sections = []
-        for number, motion in enumerate(MOTION_KEYS, start=1):
-            section = CustomMotionSection(
-                frame, row, lock, self.motion_settings[motion], number, saved, self.update, self._set_order
+        self.custom_sections = [
+            CustomMotionSection(
+                self.form, lock, self.motion_settings[motion], number, saved, self.update, self._set_order
             )
-            self.custom_sections.append(section)
-            row += section.row_count
+            for number, motion in enumerate(MOTION_KEYS, start=1)
+        ]
         self._check_orders()
-        self.next_row = row
 
+        self.motion_var.changed.connect(self.update)
+        self.custom_order_var.changed.connect(self.update)
         # After rendering, the numbers in turn depend on the order and the "Use" checkboxes again
         lock.on_unlock(self._update_controls)
         self.update()
@@ -280,17 +278,13 @@ class MotionSection:
             if section is not changed and section.order == changed.order and free:
                 section.vars["order"].set(free.pop())
 
-    def update(self):
+    def update(self, *args):
         # Show only the settings of the chosen motion
         motion = self.motion_var.get()
         custom = motion not in self.motion_rows
         for rows_motion, rows in self.motion_rows.items():
             rows.show(rows_motion == motion)
-        for widget in (self.custom_order_label, self.custom_order_inputs):
-            if custom:
-                widget.grid()
-            else:
-                widget.grid_remove()
+        self.form.setRowVisible(self.custom_order_inputs, custom)
         for section in self.custom_sections:
             section.show(custom)
         self._update_controls()
@@ -299,8 +293,6 @@ class MotionSection:
         # Only while idle: rendering keeps everything locked
         if self.lock.locked:
             return
-        for rows in [*self.motion_rows.values(), *(section.rows for section in self.custom_sections)]:
-            rows.refresh()
         in_turn = self.custom_order_var.get() == CUSTOM_ORDER_IN_TURN
         for section in self.custom_sections:
             section.update_order_menu(in_turn)

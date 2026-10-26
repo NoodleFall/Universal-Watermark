@@ -1,7 +1,16 @@
+import sys
 import threading
-from tkinter import messagebox
 
-import customtkinter as ctk
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from constants import APP_NAME, MAX_WINDOW_SCREEN_SHARE, MIN_SETTINGS_HEIGHT
 from functions.render_control import RenderCancelled, RenderControl
@@ -12,18 +21,36 @@ from ui.motion import MotionSection
 from ui.number_input import InvalidInput
 from ui.sections import EncodingSection, PathsSection, WatermarkLookSection
 from ui.settings import load_settings, save_settings
+from ui.style import STYLE_SHEET
+
+# Space around and between the cards
+WINDOW_MARGIN = 12
+CARD_SPACING = 10
+SCROLLBAR_GAP = 6
 
 
-class UniversalWatermark:
+class RenderSignals(QObject):
     """
-    The main window: the settings in sections, which scroll when the window is too short
+    Reports of the render thread. Signals emitted in that thread run the connected
+    methods of the window in the main thread, where the window may be changed.
+    """
+
+    progress = Signal(int, int, object)
+    video_progress = Signal(object, object)
+    done = Signal()
+    cancelled = Signal()
+    error = Signal(object)
+
+
+class UniversalWatermark(QMainWindow):
+    """
+    The main window: the settings in cards, which scroll when the window is too short
     for them, and the control panel below them. Renders the videos in a background thread.
     """
 
-    def __init__(self, root):
-        self.root = root
-        self.root.title(APP_NAME)
-        self.root.resizable(True, True)
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
 
         # Pause/stop control of the current rendering, None when idle
         self.control = None
@@ -32,54 +59,83 @@ class UniversalWatermark:
         self.processing_status = ""
         # Closing the window while rendering works like Stop
         self.closing = False
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Settings scroll when the window is too short for them; the control panel below stays in view
-        settings_frame = ctk.CTkScrollableFrame(root)
-        settings_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
-        root.columnconfigure(0, weight=1)
-        root.rowconfigure(0, weight=1)
-        settings_frame.columnconfigure(1, weight=1)
+        self.signals = RenderSignals()
+        self.signals.progress.connect(self._update_progress)
+        self.signals.video_progress.connect(self._update_video_progress)
+        self.signals.done.connect(self._on_done)
+        self.signals.cancelled.connect(self._on_cancelled)
+        self.signals.error.connect(self._on_error)
 
-        self.panel = ControlPanel(root, on_run=self._run, on_pause=self._toggle_pause, on_stop=self._stop)
-        self.panel.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        self.panel = ControlPanel(on_run=self._run, on_pause=self._toggle_pause, on_stop=self._stop)
 
         # Restore the settings from the previous run, falling back to defaults
         saved = load_settings()
         self.lock = InputLock()
-        self.paths = PathsSection(settings_frame, 0, self.lock, saved)
-        self.look = WatermarkLookSection(settings_frame, self.paths.next_row, self.lock, saved)
-        self.motion = MotionSection(settings_frame, self.look.next_row, self.lock, saved)
-        self.encoding = EncodingSection(settings_frame, self.motion.next_row, self.lock, saved, self.panel.set_status)
+        self.paths = PathsSection(self.lock, saved)
+        self.look = WatermarkLookSection(self.lock, saved)
+        self.motion = MotionSection(self.lock, saved)
+        self.encoding = EncodingSection(self.lock, saved, self.panel.set_status)
         self.sections = (self.paths, self.look, self.motion, self.encoding)
+
+        # Settings scroll when the window is too short for them; the control panel below stays in view
+        self.settings_widget = QWidget()
+        self.settings_widget.setObjectName("settings")
+        settings_layout = QVBoxLayout(self.settings_widget)
+        # A gap between the cards and the scroll bar
+        settings_layout.setContentsMargins(0, 0, SCROLLBAR_GAP, 0)
+        settings_layout.setSpacing(CARD_SPACING)
+        for section in self.sections:
+            settings_layout.addWidget(section.card)
+        settings_layout.addStretch()
+        self._align_setting_labels()
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidget(self.settings_widget)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(WINDOW_MARGIN, WINDOW_MARGIN, WINDOW_MARGIN, WINDOW_MARGIN)
+        layout.setSpacing(CARD_SPACING)
+        layout.addWidget(self.scroll, 1)
+        layout.addWidget(self.panel)
+        self.setCentralWidget(central)
 
         # Save the settings whenever any of them changes
         for section in self.sections:
             for var in section.variables():
-                var.trace_add("write", self._save_settings)
+                var.changed.connect(self._save_settings)
 
         # Find the video card encoder right away if "Use GPU" was on last time, to show its QP field
         if self.encoding.use_gpu_var.get():
             self.encoding.check_gpu()
 
-        self._fit_window(settings_frame)
+        self._fit_window()
 
-    def _fit_window(self, settings_frame):
-        # Open the window tall enough for all the settings, unless the screen is too short for that.
-        # customtkinter sizes are set in unscaled units, while Tk reports scaled pixels
-        self.root.update_idletasks()
-        panel_height = self.panel.winfo_reqheight()
-        max_height = self.root.winfo_screenheight() * MAX_WINDOW_SCREEN_SHARE - panel_height
-        settings_frame.configure(
-            width=settings_frame._reverse_widget_scaling(settings_frame.winfo_reqwidth()),
-            height=settings_frame._reverse_widget_scaling(min(settings_frame.winfo_reqheight(), max_height))
-        )
+    def _align_setting_labels(self):
+        # Give the setting labels of all cards the same width, so their inputs line up
+        labels = [label for label in self.settings_widget.findChildren(QLabel) if label.property("settingLabel")]
+        width = max(label.sizeHint().width() for label in labels)
+        for label in labels:
+            label.setMinimumWidth(width)
+
+    def _fit_window(self):
+        # Open the window wide enough for the settings and tall enough for all of them,
+        # unless the screen is too short for that
+        for widget in self.findChildren(QWidget):
+            widget.ensurePolished()
+        margins = 2 * WINDOW_MARGIN + CARD_SPACING
+        settings_size = self.settings_widget.sizeHint()
+        panel_height = self.panel.sizeHint().height()
+        scrollbar_width = self.scroll.verticalScrollBar().sizeHint().width()
+        width = settings_size.width() + scrollbar_width + 2 * WINDOW_MARGIN
+        max_height = self.screen().availableGeometry().height() * MAX_WINDOW_SCREEN_SHARE
+        height = min(settings_size.height() + panel_height + margins, int(max_height))
+        self.resize(width, height)
         # The window can be made shorter, down to a few rows of settings
-        self.root.update_idletasks()
-        self.root.minsize(
-            self.root._reverse_window_scaling(self.root.winfo_reqwidth()),
-            self.root._reverse_window_scaling(panel_height) + MIN_SETTINGS_HEIGHT
-        )
+        self.setMinimumSize(width, panel_height + margins + MIN_SETTINGS_HEIGHT)
 
     def _save_settings(self, *args):
         settings = {}
@@ -95,7 +151,7 @@ class UniversalWatermark:
             motions, random_motion_order = self.motion.parse()
             encoding = self.encoding.parse()
         except InvalidInput as e:
-            messagebox.showerror("Error", str(e))
+            QMessageBox.critical(self, "Error", str(e))
             return
 
         self.control = RenderControl()
@@ -132,12 +188,13 @@ class UniversalWatermark:
         self.panel.set_stopping()
         self.panel.set_status("Stopping…")
 
-    def _on_close(self):
+    def closeEvent(self, event):
         if self.control is None:
-            self.root.destroy()
+            event.accept()
             return
 
         # Stop rendering and close the window once the partial files are removed
+        event.ignore()
         self.closing = True
         if not self.control.stopped:
             self._stop()
@@ -145,7 +202,8 @@ class UniversalWatermark:
     def _close_if_requested(self):
         # Called when rendering ends; returns True if the window was closed
         if self.closing:
-            self.root.destroy()
+            self.control = None
+            self.close()
             return True
         return False
 
@@ -158,24 +216,20 @@ class UniversalWatermark:
         self.panel.set_video_stage(None)
 
     def _process(self, control, settings):
-        # Runs in the background thread; the results go to the main thread
+        # Runs in the background thread; the results go to the main thread through the signals
         try:
             main(
-                on_progress=self._on_progress,
-                on_video_progress=self._on_video_progress,
+                on_progress=self.signals.progress.emit,
+                on_video_progress=self.signals.video_progress.emit,
                 control=control,
                 **settings
             )
         except RenderCancelled:
-            self.root.after(0, self._on_cancelled)
+            self.signals.cancelled.emit()
         except Exception as e:
-            self.root.after(0, self._on_error, e)
+            self.signals.error.emit(e)
         else:
-            self.root.after(0, self._on_done)
-
-    def _on_progress(self, index, total, video_file):
-        # Called from the worker thread, so hand the UI update to the main thread
-        self.root.after(0, self._update_progress, index, total, video_file)
+            self.signals.done.emit()
 
     def _update_progress(self, processed, total, video_file):
         # Avoid division by zero when the folder has no videos
@@ -185,16 +239,15 @@ class UniversalWatermark:
             self.processing_status = f"Processing video {processed + 1} of {total}: {video_file}"
             self.panel.set_status(self.processing_status)
 
-    def _on_video_progress(self, stage, percent):
-        # Called from the worker thread, so hand the UI update to the main thread
-        self.root.after(0, self.panel.set_video_progress, stage, percent)
+    def _update_video_progress(self, stage, percent):
+        self.panel.set_video_progress(stage, percent)
 
     def _on_done(self):
         if self._close_if_requested():
             return
         self.panel.set_status("Done")
         self._finish()
-        messagebox.showinfo("Done", "All videos have been processed.")
+        QMessageBox.information(self, "Done", "All videos have been processed.")
 
     def _on_cancelled(self):
         if self._close_if_requested():
@@ -209,13 +262,15 @@ class UniversalWatermark:
             return
         self.panel.set_status("Error")
         self._finish()
-        messagebox.showerror("Error", str(error))
+        QMessageBox.critical(self, "Error", str(error))
 
 
 def run():
-    # Follow the system light/dark theme
-    ctk.set_appearance_mode("system")
-
-    root = ctk.CTk()
-    UniversalWatermark(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    # Fusion looks the same on every system and follows its light/dark theme
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLE_SHEET)
+    window = UniversalWatermark()
+    window.show()
+    sys.exit(app.exec())

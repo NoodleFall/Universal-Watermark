@@ -71,17 +71,12 @@ TEMP_FILE_MARKER = "TEMP_UW_"
 # Longest time the watermark may take to travel from the top to the bottom
 MAX_TRAVEL_TIME_SECONDS = 3600
 
-# Text color of locked fields (light theme, dark theme)
-DISABLED_TEXT_COLOR = ("gray55", "gray50")
-# Background of a collapsible section header under the mouse (light theme, dark theme)
-SECTION_HOVER_COLOR = ("gray80", "gray30")
-
 # Largest part of the screen height the window opens with; taller settings scroll
 MAX_WINDOW_SCREEN_SHARE = 0.85
 # Lowest height of the scrollable settings when the window is made shorter, in pixels
 MIN_SETTINGS_HEIGHT = 120
 
-# Step of the arrow buttons, Up/Down keys and mouse wheel
+# Step of the arrows of number fields, Up/Down keys and mouse wheel
 NUMBER_STEP = 1
 
 # Extensions of the videos to process, compared case-insensitively

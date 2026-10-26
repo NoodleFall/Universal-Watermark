@@ -1,7 +1,25 @@
-import customtkinter as ctk
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QPalette, QValidator
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from constants import DISABLED_TEXT_COLOR, NUMBER_INPUT_RE, NUMBER_STEP
+from constants import NUMBER_INPUT_RE, NUMBER_STEP
 from ui.number_input import format_number, parse_number
+
+# Width of a number field, and of the text shown in its place while its value is automatic
+NUMBER_FIELD_WIDTH = 90
+# Least width of the main menus, so they line up
+MENU_MIN_WIDTH = 260
 
 
 class InputLock:
@@ -27,168 +45,222 @@ class InputLock:
         for item in self._items:
             if hasattr(item, "set_enabled"):
                 item.set_enabled(enabled)
-            elif isinstance(item, ctk.CTkEntry):
-                set_entry_enabled(item, enabled)
             else:
-                item.configure(state="normal" if enabled else "disabled")
+                item.setEnabled(enabled)
         if enabled:
             for callback in self._unlock_callbacks:
                 callback()
 
 
-def set_entry_enabled(entry, enabled):
-    # A disabled CTkEntry looks the same as an enabled one, so also gray out its text
-    if not hasattr(entry, "default_text_color"):
-        entry.default_text_color = entry.cget("text_color")
-    entry.configure(
-        state="normal" if enabled else "disabled",
-        text_color=entry.default_text_color if enabled else DISABLED_TEXT_COLOR
-    )
+# Each bind_* function shows the variable in the widget and keeps both in sync both ways
+
+def bind_line_edit(edit, var):
+    edit.setText(var.get())
+    edit.textChanged.connect(var.set)
+
+    def show(value):
+        # Setting the same text would move the cursor to the end
+        if edit.text() != value:
+            edit.setText(value)
+
+    var.changed.connect(show)
+
+
+def bind_checkbox(checkbox, var):
+    checkbox.setChecked(var.get())
+    checkbox.toggled.connect(var.set)
+    var.changed.connect(checkbox.setChecked)
+
+
+def bind_combo(combo, var):
+    combo.setCurrentText(var.get())
+    combo.currentTextChanged.connect(var.set)
+    var.changed.connect(combo.setCurrentText)
+
+
+def bind_spinbox(spin, var):
+    # The variable keeps the number as text, e.g. "12.5", the way it is saved in the settings
+    number = parse_number(var.get())
+    if number is not None:
+        spin.setValue(number)
+    spin.valueChanged.connect(lambda value: var.set(format_number(value)))
+
+    def show(value):
+        number = parse_number(value)
+        if number is not None:
+            spin.setValue(number)
+
+    var.changed.connect(show)
+
+
+def set_secondary(label):
+    # Hints and placeholders are shown in the lighter color of the theme
+    label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+
+
+class NumberSpinBox(QDoubleSpinBox):
+    """
+    Number up to max_value with two decimals at most, shown without trailing zeros; a comma
+    works as the decimal point too. Above zero, or zero too with allow_zero. Typing a number
+    above the maximum turns it into the maximum. The mouse wheel changes the number only
+    while the field has the cursor, otherwise it scrolls the settings.
+    """
+
+    def __init__(self, max_value, allow_zero=False):
+        super().__init__()
+        self.allow_zero = allow_zero
+        self.setDecimals(2)
+        self.setRange(0 if allow_zero else 0.01, max_value)
+        self.setSingleStep(NUMBER_STEP)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFixedWidth(NUMBER_FIELD_WIDTH)
+
+    def textFromValue(self, value):
+        return format_number(value)
+
+    def valueFromText(self, text):
+        return parse_number(text) or 0
+
+    def validate(self, text, pos):
+        if not NUMBER_INPUT_RE.fullmatch(text):
+            return QValidator.State.Invalid
+        number = parse_number(text)
+        if number is None or number < self.minimum():
+            return QValidator.State.Intermediate
+        if number > self.maximum():
+            # Too large: the field shows the maximum instead
+            text = format_number(self.maximum())
+            return QValidator.State.Acceptable, text, len(text)
+        return QValidator.State.Acceptable
+
+    def stepBy(self, steps):
+        # Without allow_zero, stepping down to zero or below keeps the current value
+        if not self.allow_zero and self.value() + steps * self.singleStep() <= 0:
+            return
+        super().stepBy(steps)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            # Let the settings scroll instead
+            event.ignore()
 
 
 class NumberField:
     """
-    Entry for a number up to max_value (a number, or a function returning it) with ▲/▼ buttons,
-    placed in the grid of parent, with an optional hint after it. The Up/Down keys step the
-    number too, and so does the mouse wheel while the field has the cursor.
-    The number is above zero, or zero too with allow_zero.
+    Number field up to max_value with an optional hint after it, added to the inputs of a
+    settings row. The number is above zero, or zero too with allow_zero.
     """
 
-    def __init__(self, parent, lock, variable, max_value, hint=None, allow_zero=False):
+    def __init__(self, inputs, lock, variable, max_value, hint=None, allow_zero=False):
         self.variable = variable
-        self._max_value = max_value
-        self.allow_zero = allow_zero
+        self.spin = NumberSpinBox(max_value, allow_zero)
+        bind_spinbox(self.spin, variable)
+        inputs.layout().addWidget(self._field_widget())
 
-        self.entry = ctk.CTkEntry(
-            parent,
-            textvariable=variable,
-            width=70,
-            validate="key",
-            validatecommand=(parent.register(self._validate), "%P")
-        )
-        self.entry.grid(row=0, column=0)
-
-        arrows = ctk.CTkFrame(parent, fg_color="transparent")
-        arrows.grid(row=0, column=1, padx=(3, 0))
-        up = ctk.CTkButton(arrows, text="▲", width=22, height=13, font=("", 8), command=lambda: self.step(1))
-        up.grid(row=0, column=0, pady=(0, 1))
-        down = ctk.CTkButton(arrows, text="▼", width=22, height=13, font=("", 8), command=lambda: self.step(-1))
-        down.grid(row=1, column=0)
-        self.arrows = (up, down)
-
-        self.entry.bind("<Up>", lambda e: self.step(1))
-        self.entry.bind("<Down>", lambda e: self.step(-1))
-        self.entry.bind("<MouseWheel>", lambda e: self._wheel(1 if e.delta > 0 else -1))
-        self.entry.bind("<Button-4>", lambda e: self._wheel(1))
-        self.entry.bind("<Button-5>", lambda e: self._wheel(-1))
-
+        self.hint_label = None
         if hint is not None:
-            ctk.CTkLabel(parent, text=hint).grid(row=0, column=2, padx=(5, 0))
+            self.hint_label = QLabel(hint)
+            set_secondary(self.hint_label)
+            inputs.layout().addWidget(self.hint_label)
         lock.add(self)
 
-    @property
-    def max_value(self):
-        return self._max_value() if callable(self._max_value) else self._max_value
+    def _field_widget(self):
+        return self.spin
 
-    def _validate(self, value):
-        if not NUMBER_INPUT_RE.fullmatch(value):
-            return False
-        number = parse_number(value)
-        if number is not None and number > self.max_value:
-            # Too large: reset the field to the maximum. Changing the variable inside
-            # the validation would turn validation off, so do it right after
-            self.entry.after_idle(self.variable.set, format_number(self.max_value))
-            return False
-        return True
+    def set_maximum(self, max_value):
+        self.spin.setMaximum(max_value)
 
-    def _wheel(self, direction):
-        # The mouse wheel changes the value only while the field has the cursor,
-        # otherwise it scrolls the settings, so scrolling past a field doesn't change it.
-        # The CTkEntry frame holds the Tk entry that gets the focus
-        focused = self.entry.focus_get()
-        if focused is None or not str(focused).startswith(str(self.entry) + "."):
-            return None
-        self.step(direction)
-        # Don't scroll the settings as well
-        return "break"
-
-    def step(self, direction):
-        if self.entry.cget("state") == "disabled":
-            return
-        current = parse_number(self.variable.get()) or 0
-        new = round(current + direction * NUMBER_STEP, 2)
-        if self.allow_zero:
-            # Stay within [0, max_value]: going below zero stops at zero
-            new = max(new, 0)
-        elif new <= 0:
-            # Stay within (0, max_value]: going below zero keeps the current value
-            return
-        self.variable.set(format_number(min(new, self.max_value)))
+    def set_hint(self, hint):
+        self.hint_label.setText(hint)
 
     def set_enabled(self, enabled):
-        set_entry_enabled(self.entry, enabled)
-        for arrow in self.arrows:
-            arrow.configure(state="normal" if enabled else "disabled")
+        self.spin.setEnabled(enabled)
 
 
 class AutoNumberField(NumberField):
     """
     Number field that auto_var switches to an automatic value, e.g. the height kept from the
-    aspect ratio or the original bitrate. With checkbox_text, a checkbox controls auto_var;
-    without it, the owner sets auto_var and calls update().
+    aspect ratio or the original bitrate; auto_text is shown in place of the number then.
+    With checkbox_text, a checkbox after the hint controls auto_var; without it, the owner sets auto_var.
     """
 
-    def __init__(self, parent, lock, variable, max_value, hint, auto_var, checkbox_text, auto_text,
+    def __init__(self, inputs, lock, variable, max_value, hint, auto_var, checkbox_text, auto_text,
                  allow_zero=False):
-        super().__init__(parent, lock, variable, max_value, hint, allow_zero)
         self.auto_var = auto_var
-        # Shown in the field instead of the number while the checkbox is on
-        self.auto_text_var = ctk.StringVar(value=auto_text)
-        self.text_color = self.entry.cget("text_color")
+        self.auto_text = QLineEdit(auto_text)
+        self.auto_text.setEnabled(False)
+        self.auto_text.setFixedWidth(NUMBER_FIELD_WIDTH)
+        self.stack = QStackedWidget()
+        super().__init__(inputs, lock, variable, max_value, hint, allow_zero)
+
         self.checkbox = None
         if checkbox_text is not None:
-            self.checkbox = ctk.CTkCheckBox(parent, text=checkbox_text, variable=auto_var, command=self.update)
-            self.checkbox.grid(row=0, column=3, padx=(20, 0))
-        self.update()
+            self.checkbox = QCheckBox(checkbox_text)
+            bind_checkbox(self.checkbox, auto_var)
+            inputs.layout().addSpacing(15)
+            inputs.layout().addWidget(self.checkbox)
+        auto_var.changed.connect(self._update)
+        self._update()
 
-    def update(self):
-        # The custom value is only used when the checkbox is off.
-        # A disabled CTkEntry looks the same as an enabled one,
-        # so also show the automatic value in gray instead of the custom one.
-        # Switching the variable runs the input validation on that text, and Tk turns
-        # validation off for good when it fails, so pause it during the switch
-        is_auto = self.auto_var.get()
-        self.entry.configure(validate="none")
-        if is_auto:
-            self.entry.configure(state="disabled", textvariable=self.auto_text_var, text_color=DISABLED_TEXT_COLOR)
-        else:
-            self.entry.configure(state="normal", textvariable=self.variable, text_color=self.text_color)
-        self.entry.configure(validate="key")
-        for arrow in self.arrows:
-            arrow.configure(state="disabled" if is_auto else "normal")
+    def _field_widget(self):
+        self.stack.addWidget(self.spin)
+        self.stack.addWidget(self.auto_text)
+        self.stack.setFixedWidth(NUMBER_FIELD_WIDTH)
+        return self.stack
+
+    def _update(self, *args):
+        # The number is only used while the value isn't automatic
+        self.stack.setCurrentWidget(self.auto_text if self.auto_var.get() else self.spin)
 
     def set_enabled(self, enabled):
-        # Unlocked, the field also depends on its checkbox
+        super().set_enabled(enabled)
         if self.checkbox is not None:
-            self.checkbox.configure(state="normal" if enabled else "disabled")
-        if enabled:
-            self.update()
-        else:
-            self.entry.configure(state="disabled", text_color=DISABLED_TEXT_COLOR)
-            for arrow in self.arrows:
-                arrow.configure(state="disabled")
+            self.checkbox.setEnabled(enabled)
 
 
-def add_setting_row(frame, row, label, indent=False):
-    # Label in the first column of the settings grid and a frame for the inputs next to it;
-    # returns both, e.g. to show or hide the row
-    label_widget = ctk.CTkLabel(frame, text=label)
-    label_widget.grid(row=row, column=0, sticky="w", padx=(30 if indent else 10, 10), pady=2)
-    return label_widget, add_inputs_frame(frame, row)
+def make_card(title):
+    # Card of a group of settings: a frame with a bold title and a form of settings rows;
+    # returns both
+    card = QFrame()
+    card.setObjectName("card")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(14, 10, 14, 12)
+    title_label = QLabel(title)
+    font = QFont(title_label.font())
+    font.setBold(True)
+    font.setPointSizeF(font.pointSizeF() * 1.15)
+    title_label.setFont(font)
+    layout.addWidget(title_label)
+    form = QFormLayout()
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    form.setHorizontalSpacing(12)
+    form.setVerticalSpacing(6)
+    layout.addLayout(form)
+    return card, form
 
 
-def add_inputs_frame(frame, row):
-    # Frame for the inputs of a row of the settings grid, next to its label
-    inputs = ctk.CTkFrame(frame, fg_color="transparent")
-    inputs.grid(row=row, column=1, columnspan=2, sticky="w", padx=5, pady=2)
+def make_inputs(packed=True):
+    # Row of inputs, e.g. a field, its hint and a checkbox; packed to the left,
+    # or spread over the width for a field that should take all of it
+    inputs = QWidget()
+    layout = QHBoxLayout(inputs)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    if packed:
+        layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
     return inputs
+
+
+def add_setting_row(form, label, indent=False, packed=True):
+    # Settings row: a label and the inputs next to it; returns both, e.g. to show or hide the row
+    # with form.setRowVisible(inputs, …). Setting labels get the same width in all cards (see the main window)
+    label_widget = QLabel(label)
+    label_widget.setProperty("settingLabel", True)
+    if indent:
+        label_widget.setContentsMargins(20, 0, 0, 0)
+    inputs = make_inputs(packed)
+    form.addRow(label_widget, inputs)
+    return label_widget, inputs
+

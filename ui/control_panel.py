@@ -1,92 +1,106 @@
-import customtkinter as ctk
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton
 
-from constants import DISABLED_TEXT_COLOR, VIDEO_STAGE_PLACEHOLDER
+from constants import VIDEO_STAGE_PLACEHOLDER
+from ui.fields import set_secondary
 
-
-def set_bar(bar, value):
-    # customtkinter still draws a small rounded stub at 0,
-    # so hide it by painting the progress part with the background color
-    if not hasattr(bar, "default_progress_color"):
-        bar.default_progress_color = bar.cget("progress_color")
-    progress_color = bar.cget("fg_color") if value <= 0 else bar.default_progress_color
-    bar.configure(progress_color=progress_color)
-    bar.set(value)
+# Progress bars count in tenths of a percent, so they move smoothly
+PROGRESS_STEPS = 1000
 
 
-class ControlPanel(ctk.CTkFrame):
+def make_progress_bar():
+    bar = QProgressBar()
+    bar.setRange(0, PROGRESS_STEPS)
+    bar.setTextVisible(False)
+    return bar
+
+
+class ControlPanel(QFrame):
     """
     Run, Pause and Stop buttons, the progress of the current video with its stage,
     the progress over all videos and the status line. Stays in view below the settings.
     """
 
-    def __init__(self, master, on_run, on_pause, on_stop):
-        super().__init__(master)
-        self.columnconfigure(1, weight=1)
+    def __init__(self, on_run, on_pause, on_stop):
+        super().__init__()
+        self.setObjectName("card")
+        layout = QGridLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(4)
+        layout.setColumnStretch(1, 1)
 
-        buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.grid(row=0, column=0, columnspan=3, pady=(10, 5))
-        self.run_button = ctk.CTkButton(buttons, text="Run", width=100, command=on_run)
-        self.run_button.grid(row=0, column=0, padx=5)
-        self.pause_button = ctk.CTkButton(buttons, text="Pause", width=100, state="disabled", command=on_pause)
-        self.pause_button.grid(row=0, column=1, padx=5)
-        self.stop_button = ctk.CTkButton(buttons, text="Stop", width=100, state="disabled", command=on_stop)
-        self.stop_button.grid(row=0, column=2, padx=5)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.run_button = QPushButton("Run")
+        # Styled as the main button of the window
+        self.run_button.setObjectName("primary")
+        self.pause_button = QPushButton("Pause")
+        self.stop_button = QPushButton("Stop")
+        for button, command in ((self.run_button, on_run), (self.pause_button, on_pause), (self.stop_button, on_stop)):
+            button.setMinimumWidth(100)
+            button.clicked.connect(command)
+            buttons.addWidget(button)
+        buttons.addStretch()
+        layout.addLayout(buttons, 0, 0, 1, 3)
+        layout.setRowMinimumHeight(1, 6)
 
         # Progress of the video currently being rendered
-        ctk.CTkLabel(self, text="Current video:").grid(row=1, column=0, sticky="w", padx=10, pady=2)
-        self.video_progress = ctk.CTkProgressBar(self, mode="determinate")
-        self.video_progress.grid(row=1, column=1, sticky="ew", padx=5, pady=2)
-        self.video_percent_var = ctk.StringVar(value="0%")
-        ctk.CTkLabel(self, textvariable=self.video_percent_var).grid(row=1, column=2, sticky="w", padx=10, pady=2)
+        layout.addWidget(QLabel("Current video:"), 2, 0)
+        self.video_progress = make_progress_bar()
+        layout.addWidget(self.video_progress, 2, 1)
+        self.video_percent_label = QLabel()
+        self.video_percent_label.setMinimumWidth(40)
+        layout.addWidget(self.video_percent_label, 2, 2)
         # Stage the current video bar shows the progress of, e.g. "[1/3] Measuring loudness"
-        self.video_stage_label = ctk.CTkLabel(self)
-        self.video_stage_label.grid(row=2, column=1, sticky="w", padx=5, pady=(0, 2))
-        self.default_text_color = self.video_stage_label.cget("text_color")
-        self.reset_video_progress()
+        self.video_stage_label = QLabel()
+        layout.addWidget(self.video_stage_label, 3, 1)
 
         # Progress over all videos
-        ctk.CTkLabel(self, text="Overall progress:").grid(row=3, column=0, sticky="w", padx=10, pady=2)
-        self.progress = ctk.CTkProgressBar(self, mode="determinate")
-        set_bar(self.progress, 0)
-        self.progress.grid(row=3, column=1, sticky="ew", padx=5, pady=2)
+        layout.addWidget(QLabel("Overall progress:"), 4, 0)
+        self.progress = make_progress_bar()
+        layout.addWidget(self.progress, 4, 1)
 
-        self.status_var = ctk.StringVar(value="Ready")
-        ctk.CTkLabel(self, textvariable=self.status_var).grid(
-            row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 10)
-        )
+        self.status_label = QLabel("Ready")
+        layout.setRowMinimumHeight(5, 6)
+        layout.addWidget(self.status_label, 6, 0, 1, 3)
+
+        self.set_running(False)
+        self.reset_video_progress()
 
     def set_status(self, text):
-        self.status_var.set(text)
+        self.status_label.setText(text)
 
     def set_video_stage(self, stage):
         # Show the stage of the current video, or a gray placeholder (stage None) while no video is processed
         if stage is None:
-            self.video_stage_label.configure(text=VIDEO_STAGE_PLACEHOLDER, text_color=DISABLED_TEXT_COLOR)
+            set_secondary(self.video_stage_label)
+            self.video_stage_label.setText(VIDEO_STAGE_PLACEHOLDER)
         else:
-            self.video_stage_label.configure(text=stage, text_color=self.default_text_color)
+            self.video_stage_label.setForegroundRole(QPalette.ColorRole.WindowText)
+            self.video_stage_label.setText(stage)
 
     def set_video_progress(self, stage, percent):
-        set_bar(self.video_progress, percent / 100)
-        self.video_percent_var.set(f"{percent}%")
+        self.video_progress.setValue(round(percent / 100 * PROGRESS_STEPS))
+        self.video_percent_label.setText(f"{percent}%")
         self.set_video_stage(stage)
 
     def reset_video_progress(self):
-        set_bar(self.video_progress, 0)
-        self.video_percent_var.set("0%")
-        self.set_video_stage(None)
+        self.set_video_progress(None, 0)
 
     def set_overall_progress(self, fraction):
-        set_bar(self.progress, fraction)
+        self.progress.setValue(round(fraction * PROGRESS_STEPS))
 
     def set_running(self, running):
         # Run while idle; Pause and Stop while rendering
-        self.run_button.configure(state="disabled" if running else "normal")
-        self.pause_button.configure(state="normal" if running else "disabled", text="Pause")
-        self.stop_button.configure(state="normal" if running else "disabled")
+        self.run_button.setEnabled(not running)
+        self.pause_button.setEnabled(running)
+        self.pause_button.setText("Pause")
+        self.stop_button.setEnabled(running)
 
     def set_paused(self, paused):
-        self.pause_button.configure(text="Resume" if paused else "Pause")
+        self.pause_button.setText("Resume" if paused else "Pause")
 
     def set_stopping(self):
-        self.pause_button.configure(state="disabled")
-        self.stop_button.configure(state="disabled")
+        self.pause_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
