@@ -6,9 +6,9 @@ from constants import (
     CODEC_H264,
     MOTION_TOP_TO_BOTTOM,
     OUTPUT_EXTENSION_OVERRIDES,
-    VIDEO_EXTENSIONS,
 )
 from functions.console_progress import end_progress_line, print_progress
+from functions.video_files import find_videos, sort_videos
 from functions.watermark import add_watermark
 
 
@@ -28,7 +28,25 @@ def get_output_video_path(output_folder_path, video_file, video_files, codec=COD
     return os.path.join(output_folder_path, f"watermarked_{name}{extension}")
 
 
-def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
+def get_output_video_paths(output_folder_path, video_paths, codec=CODEC_H264):
+    # Paths of the results of the videos, in the same order. Videos with the same name from
+    # different folders get "_2", "_3"… so they don't overwrite each other's result
+    video_files = [os.path.basename(path) for path in video_paths]
+    output_paths = []
+    taken = set()
+    for video_file in video_files:
+        output_path = get_output_video_path(output_folder_path, video_file, video_files, codec)
+        base, extension = os.path.splitext(output_path)
+        number = 2
+        while output_path.lower() in taken:
+            output_path = f"{base}_{number}{extension}"
+            number += 1
+        taken.add(output_path.lower())
+        output_paths.append(output_path)
+    return output_paths
+
+
+def main(video_paths, output_folder_path, watermark_image_path, on_progress=None, on_video_progress=None, control=None,
          width_percent=50, height_percent=None, opacity_percent=33, bitrate_kbps=None,
          motions=None, random_motion_order=False,
          target_lufs=-14.0, crf=None, use_gpu=False, codec=CODEC_H264, qp=None):
@@ -42,10 +60,9 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
 
-    # Get a list of all video files in the folder, by name, so the motions go in turn in a predictable order
-    video_files = sorted(
-        (f for f in os.listdir(raw_videos_path) if f.lower().endswith(VIDEO_EXTENSIONS)), key=str.lower
-    )
+    # By name, so the motions go in turn in a predictable order
+    video_paths = sort_videos(video_paths)
+    output_video_paths = get_output_video_paths(output_folder_path, video_paths, codec)
 
     def report_video_progress(stage, percent):
         # Show the progress of the current stage in the console and report it to the caller (e.g. the GUI)
@@ -54,17 +71,15 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
             on_video_progress(stage, percent)
 
     # Process each video
-    for i, video_file in enumerate(video_files):
+    for i, (input_video_path, output_video_path) in enumerate(zip(video_paths, output_video_paths)):
+        video_file = os.path.basename(input_video_path)
         # Wait here if paused and stop if requested before starting the next video
         if control is not None:
             control.check()
 
         # Report progress to the caller (e.g. the GUI)
         if on_progress is not None:
-            on_progress(i, len(video_files), video_file)
-
-        input_video_path = os.path.join(raw_videos_path, video_file)
-        output_video_path = get_output_video_path(output_folder_path, video_file, video_files, codec)
+            on_progress(i, len(video_paths), video_file)
 
         print(f"Processing video: {video_file}")
         motion_settings = random.choice(motions) if random_motion_order else motions[i % len(motions)]
@@ -96,7 +111,7 @@ def main(raw_videos_path, output_folder_path, watermark_image_path, on_progress=
 
     # Report that all videos have been processed
     if on_progress is not None:
-        on_progress(len(video_files), len(video_files), None)
+        on_progress(len(video_paths), len(video_paths), None)
 
 
 if __name__ == "__main__":
@@ -109,5 +124,5 @@ if __name__ == "__main__":
     # Path to the watermark image
     watermark_image_path = "watermark.png"
 
-    # Run batch processing
-    main(raw_videos_path, output_folder_path, watermark_image_path)
+    # Run batch processing of the videos in the folder
+    main(find_videos(raw_videos_path), output_folder_path, watermark_image_path)

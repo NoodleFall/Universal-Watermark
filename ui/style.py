@@ -51,6 +51,50 @@ QPushButton#primary:disabled {
     color: palette(window);
 }
 
+QFrame#tile {
+    background: rgba(127, 127, 127, 0.07);
+    border: 1px solid rgba(127, 127, 127, 0.28);
+    border-radius: 10px;
+}
+QFrame#tile:hover {
+    border-color: rgba(127, 127, 127, 0.6);
+}
+QLabel#preview {
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: 6px;
+}
+QLabel#error {
+    color: #e5534b;
+}
+QToolButton#removeVideo {
+    background: rgba(0, 0, 0, 0.55);
+    color: white;
+    border: none;
+    border-radius: 11px;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+}
+QToolButton#removeVideo:hover {
+    background: #c9403a;
+}
+
+QFrame#dropArea {
+    border: 2px dashed transparent;
+    border-radius: 12px;
+}
+QFrame#dropArea[empty="true"] {
+    border-color: rgba(127, 127, 127, 0.4);
+}
+QFrame#dropArea[dragging="true"] {
+    border-color: @accent;
+    background: rgba(127, 127, 127, 0.08);
+}
+QWidget#tiles {
+    background: transparent;
+}
+
 QToolButton#sectionToggle {
     border: none;
     border-radius: 6px;

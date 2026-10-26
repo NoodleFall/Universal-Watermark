@@ -76,6 +76,13 @@ MAX_WINDOW_SCREEN_SHARE = 0.85
 # Lowest height of the scrollable settings when the window is made shorter, in pixels
 MIN_SETTINGS_HEIGHT = 120
 
+# Previews of the videos on the first page of the window: size of the box in pixels (16:9),
+# time of the frame shown (the middle of shorter videos) and how many videos are read at once
+PREVIEW_WIDTH = 184
+PREVIEW_HEIGHT = 104
+PREVIEW_TIME_SECONDS = 1
+PREVIEW_WORKERS = 4
+
 # Step of the arrows of number fields, Up/Down keys and mouse wheel
 NUMBER_STEP = 1
 

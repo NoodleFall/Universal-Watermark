@@ -4,10 +4,13 @@ import threading
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -16,12 +19,13 @@ from constants import APP_NAME, MAX_WINDOW_SCREEN_SHARE, MIN_SETTINGS_HEIGHT
 from functions.render_control import RenderCancelled, RenderControl
 from main import main
 from ui.control_panel import ControlPanel
-from ui.fields import InputLock
+from ui.fields import InputLock, make_title, set_secondary
 from ui.motion import MotionSection
 from ui.number_input import InvalidInput
 from ui.sections import EncodingSection, PathsSection, WatermarkLookSection
 from ui.settings import load_settings, save_settings
 from ui.style import apply_style
+from ui.videos import VideosPage, plural
 
 # Space around and between the cards
 WINDOW_MARGIN = 12
@@ -44,8 +48,9 @@ class RenderSignals(QObject):
 
 class UniversalWatermark(QMainWindow):
     """
-    The main window: the settings in cards, which scroll when the window is too short
-    for them, and the control panel below them. Renders the videos in a background thread.
+    The main window, in two pages: first the videos to watermark, then the settings in cards,
+    which scroll when the window is too short for them, and the control panel below them.
+    Renders the videos in a background thread.
     """
 
     def __init__(self):
@@ -77,6 +82,8 @@ class UniversalWatermark(QMainWindow):
         self.motion = MotionSection(self.lock, saved)
         self.encoding = EncodingSection(self.lock, saved, self.panel.set_status)
         self.sections = (self.paths, self.look, self.motion, self.encoding)
+        self.videos = VideosPage(on_next=self._show_settings)
+        self.videos.load_settings(saved)
 
         # Settings scroll when the window is too short for them; the control panel below stays in view
         self.settings_widget = QWidget()
@@ -95,16 +102,38 @@ class UniversalWatermark(QMainWindow):
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(WINDOW_MARGIN, WINDOW_MARGIN, WINDOW_MARGIN, WINDOW_MARGIN)
+        # Settings page: back to the videos, the settings and the control panel
+        self.top_bar = QHBoxLayout()
+        self.back_button = QPushButton("←  Back")
+        self.back_button.clicked.connect(self._show_videos)
+        self.lock.add(self.back_button)
+        self.top_bar.addWidget(self.back_button)
+        self.top_bar.addSpacing(6)
+        self.top_bar.addWidget(make_title("Settings", 1.4))
+        self.videos_count_label = QLabel()
+        set_secondary(self.videos_count_label)
+        self.top_bar.addSpacing(6)
+        self.top_bar.addWidget(self.videos_count_label, 0, Qt.AlignmentFlag.AlignBottom)
+        self.top_bar.addStretch()
+        settings_page = QWidget()
+        layout = QVBoxLayout(settings_page)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(CARD_SPACING)
+        layout.addLayout(self.top_bar)
         layout.addWidget(self.scroll, 1)
         layout.addWidget(self.panel)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.videos)
+        self.pages.addWidget(settings_page)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(WINDOW_MARGIN, WINDOW_MARGIN, WINDOW_MARGIN, WINDOW_MARGIN)
+        central_layout.addWidget(self.pages)
         self.setCentralWidget(central)
 
         # Save the settings whenever any of them changes
-        for section in self.sections:
+        for section in (self.videos, *self.sections):
             for var in section.variables():
                 var.changed.connect(self._save_settings)
 
@@ -126,7 +155,7 @@ class UniversalWatermark(QMainWindow):
         # unless the screen is too short for that
         for widget in self.findChildren(QWidget):
             widget.ensurePolished()
-        margins = 2 * WINDOW_MARGIN + CARD_SPACING
+        margins = 2 * WINDOW_MARGIN + 2 * CARD_SPACING + self.top_bar.sizeHint().height()
         settings_size = self.settings_widget.sizeHint()
         panel_height = self.panel.sizeHint().height()
         scrollbar_width = self.scroll.verticalScrollBar().sizeHint().width()
@@ -137,9 +166,16 @@ class UniversalWatermark(QMainWindow):
         # The window can be made shorter, down to a few rows of settings
         self.setMinimumSize(width, panel_height + margins + MIN_SETTINGS_HEIGHT)
 
+    def _show_settings(self):
+        self.videos_count_label.setText(plural(len(self.videos.video_paths()), "video"))
+        self.pages.setCurrentIndex(1)
+
+    def _show_videos(self):
+        self.pages.setCurrentIndex(0)
+
     def _save_settings(self, *args):
         settings = {}
-        for section in self.sections:
+        for section in (self.videos, *self.sections):
             settings.update(section.settings())
         save_settings(settings)
 
@@ -167,7 +203,8 @@ class UniversalWatermark(QMainWindow):
         thread = threading.Thread(
             target=self._process,
             args=(self.control, {
-                **paths, **look, **encoding, "motions": motions, "random_motion_order": random_motion_order
+                "video_paths": self.videos.video_paths(), **paths, **look, **encoding,
+                "motions": motions, "random_motion_order": random_motion_order
             }),
             daemon=True
         )
@@ -190,6 +227,7 @@ class UniversalWatermark(QMainWindow):
 
     def closeEvent(self, event):
         if self.control is None:
+            self.videos.shutdown()
             event.accept()
             return
 

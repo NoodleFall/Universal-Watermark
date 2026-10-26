@@ -220,6 +220,16 @@ class AutoNumberField(NumberField):
             self.checkbox.setEnabled(enabled)
 
 
+def make_title(text, scale=1.15):
+    # Bold title, scale times the size of the usual text
+    title = QLabel(text)
+    font = QFont(title.font())
+    font.setBold(True)
+    font.setPointSizeF(font.pointSizeF() * scale)
+    title.setFont(font)
+    return title
+
+
 def make_card(title):
     # Card of a group of settings: a frame with a bold title and a form of settings rows;
     # returns both
@@ -227,12 +237,7 @@ def make_card(title):
     card.setObjectName("card")
     layout = QVBoxLayout(card)
     layout.setContentsMargins(14, 10, 14, 12)
-    title_label = QLabel(title)
-    font = QFont(title_label.font())
-    font.setBold(True)
-    font.setPointSizeF(font.pointSizeF() * 1.15)
-    title_label.setFont(font)
-    layout.addWidget(title_label)
+    layout.addWidget(make_title(title))
     form = QFormLayout()
     form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     form.setHorizontalSpacing(12)

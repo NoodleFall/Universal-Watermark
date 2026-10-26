@@ -46,15 +46,13 @@ from ui.var import Var
 
 
 class PathsSection:
-    """Folder of the raw videos, output folder and watermark image, each with a "Browse…" button."""
+    """Output folder and watermark image, each with a "Browse…" button."""
 
     def __init__(self, lock, saved):
-        self.raw_videos_var = Var(saved.get("raw_videos_path", "raw_videos"))
         self.output_folder_var = Var(saved.get("output_folder_path", "watermarked_videos"))
         self.watermark_image_var = Var(saved.get("watermark_image_path", "watermark.png"))
-        self.card, form = make_card("Files")
+        self.card, form = make_card("Output")
 
-        self._add_path_row(form, lock, "Raw videos folder:", self.raw_videos_var, self._browse_raw_videos)
         self._add_path_row(form, lock, "Output folder:", self.output_folder_var, self._browse_output_folder)
         self._add_path_row(form, lock, "Watermark image:", self.watermark_image_var, self._browse_watermark)
 
@@ -72,11 +70,6 @@ class PathsSection:
         layout.addWidget(button)
         lock.add(entry, button)
 
-    def _browse_raw_videos(self):
-        path = QFileDialog.getExistingDirectory(self.card, "Select raw videos folder", self.raw_videos_var.get())
-        if path:
-            self.raw_videos_var.set(path)
-
     def _browse_output_folder(self):
         path = QFileDialog.getExistingDirectory(self.card, "Select output folder", self.output_folder_var.get())
         if path:
@@ -91,25 +84,20 @@ class PathsSection:
             self.watermark_image_var.set(path)
 
     def variables(self):
-        return [self.raw_videos_var, self.output_folder_var, self.watermark_image_var]
+        return [self.output_folder_var, self.watermark_image_var]
 
     def settings(self):
         return {
-            "raw_videos_path": self.raw_videos_var.get(),
             "output_folder_path": self.output_folder_var.get(),
             "watermark_image_path": self.watermark_image_var.get(),
         }
 
     def parse(self):
-        # Returns the paths for main(), or raises InvalidInput if the input folder or image is missing
-        raw_videos_path = self.raw_videos_var.get()
+        # Returns the paths for main(), or raises InvalidInput if the image is missing
         watermark_image_path = self.watermark_image_var.get()
-        if not os.path.isdir(raw_videos_path):
-            raise InvalidInput(f"Raw videos folder not found:\n{raw_videos_path}")
         if not os.path.isfile(watermark_image_path):
             raise InvalidInput(f"Watermark image not found:\n{watermark_image_path}")
         return {
-            "raw_videos_path": raw_videos_path,
             "output_folder_path": self.output_folder_var.get(),
             "watermark_image_path": watermark_image_path,
         }
