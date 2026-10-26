@@ -1,5 +1,15 @@
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QPalette
+
+# How much darker than the highlight color of the theme the main button is, in percent
+# (100 = the same); the plain highlight color stands out too much in the dark theme
+ACCENT_DARKER = 145
+# How much darker the main button gets while pressed
+ACCENT_PRESSED_DARKER = 115
+
 # Look of the window on top of the Fusion style. Colors come from the palette,
-# so the same rules work in the light and the dark theme of the system
+# so the same rules work in the light and the dark theme of the system;
+# @accent and @accent-pressed are set by apply_style()
 STYLE_SHEET = """
 QFrame#card {
     background: rgba(127, 127, 127, 0.07);
@@ -24,13 +34,16 @@ QPushButton:disabled {
 }
 
 QPushButton#primary {
-    background: palette(highlight);
+    background: @accent;
     color: palette(highlighted-text);
-    border: 1px solid palette(highlight);
+    border: 1px solid @accent;
     font-weight: bold;
 }
 QPushButton#primary:hover {
     border-color: palette(highlighted-text);
+}
+QPushButton#primary:pressed {
+    background: @accent-pressed;
 }
 QPushButton#primary:disabled {
     background: rgba(127, 127, 127, 0.3);
@@ -85,3 +98,30 @@ QScrollArea, QScrollArea > QWidget > QWidget#settings {
     border: none;
 }
 """
+
+
+def apply_style(app):
+    # Style the window for the current theme of the system, and again whenever it changes
+    _apply_theme_colors(app)
+    # The new palette of the theme is set after the change is reported
+    app.styleHints().colorSchemeChanged.connect(lambda scheme: QTimer.singleShot(0, lambda: _apply_theme_colors(app)))
+
+
+def _apply_theme_colors(app):
+    palette = app.palette()
+    accent = palette.color(QPalette.ColorRole.Highlight).darker(ACCENT_DARKER)
+    app.setStyleSheet(
+        STYLE_SHEET
+        .replace("@accent-pressed", accent.darker(ACCENT_PRESSED_DARKER).name())
+        .replace("@accent", accent.name())
+    )
+    # Fusion fills the boxes of checkboxes with the color of the text fields, which is too dark
+    # on the cards in the dark theme; use the color of the buttons, and of the window while disabled
+    checkbox = QPalette(palette)
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        checkbox.setColor(group, QPalette.ColorRole.Base, palette.color(group, QPalette.ColorRole.Button))
+    checkbox.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,
+        palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Window)
+    )
+    app.setPalette(checkbox, "QCheckBox")

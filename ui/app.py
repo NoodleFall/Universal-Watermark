@@ -21,7 +21,7 @@ from ui.motion import MotionSection
 from ui.number_input import InvalidInput
 from ui.sections import EncodingSection, PathsSection, WatermarkLookSection
 from ui.settings import load_settings, save_settings
-from ui.style import STYLE_SHEET
+from ui.style import apply_style
 
 # Space around and between the cards
 WINDOW_MARGIN = 12
@@ -270,7 +270,7 @@ def run():
     app.setApplicationName(APP_NAME)
     # Fusion looks the same on every system and follows its light/dark theme
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLE_SHEET)
+    apply_style(app)
     window = UniversalWatermark()
     window.show()
     sys.exit(app.exec())
