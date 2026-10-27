@@ -8,6 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+#misc.
 raw_videos
 watermarked_videos
 watermark.png

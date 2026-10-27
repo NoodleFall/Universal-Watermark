@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from constants import APP_NAME, MAX_WINDOW_SCREEN_SHARE, MIN_SETTINGS_HEIGHT
 from functions.render_control import RenderCancelled, RenderControl
-from main import main
+from functions.batch import process_videos
 from ui.control_panel import ControlPanel
 from ui.fields import InputLock, make_title, set_secondary
 from ui.motion import MotionSection
@@ -256,7 +256,7 @@ class UniversalWatermark(QMainWindow):
     def _process(self, control, settings):
         # Runs in the background thread; the results go to the main thread through the signals
         try:
-            main(
+            process_videos(
                 on_progress=self.signals.progress.emit,
                 on_video_progress=self.signals.video_progress.emit,
                 control=control,
