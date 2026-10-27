@@ -8,7 +8,6 @@ from constants import (
     OUTPUT_EXTENSION_OVERRIDES,
 )
 from functions.console_progress import end_progress_line, print_progress
-from functions.video_files import sort_videos
 from functions.watermark import add_watermark
 
 
@@ -60,8 +59,7 @@ def process_videos(video_paths, output_folder_path, watermark_image_path, on_pro
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
 
-    # By name, so the motions go in turn in a predictable order
-    video_paths = sort_videos(video_paths)
+    # In the order given: the motions go in turn in it
     output_video_paths = get_output_video_paths(output_folder_path, video_paths, codec)
 
     def report_video_progress(stage, percent):

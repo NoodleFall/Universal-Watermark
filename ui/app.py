@@ -1,7 +1,8 @@
 import sys
 import threading
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -20,12 +21,16 @@ from functions.render_control import RenderCancelled, RenderControl
 from functions.batch import process_videos
 from ui.control_panel import ControlPanel
 from ui.fields import InputLock, make_title, set_secondary
+from ui.history import History
 from ui.motion import MotionSection
 from ui.number_input import InvalidInput
 from ui.sections import EncodingSection, PathsSection, WatermarkLookSection
 from ui.settings import load_settings, save_settings
 from ui.style import apply_style
 from ui.videos import VideosPage, plural
+
+UNDO_KEYS = [QKeySequence("Ctrl+Z")]
+REDO_KEYS = [QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y")]
 
 # Space around and between the cards
 WINDOW_MARGIN = 12
@@ -50,7 +55,8 @@ class UniversalWatermark(QMainWindow):
     """
     The main window, in two pages: first the videos to watermark, then the settings in cards,
     which scroll when the window is too short for them, and the control panel below them.
-    Renders the videos in a background thread.
+    Renders the videos in a background thread. Ctrl+Z undoes the changes on the shown page,
+    Ctrl+Shift+Z and Ctrl+Y redo them: each page has its own history, so nothing changes out of sight.
     """
 
     def __init__(self):
@@ -77,12 +83,14 @@ class UniversalWatermark(QMainWindow):
         # Restore the settings from the previous run, falling back to defaults
         saved = load_settings()
         self.lock = InputLock()
+        # Undo history of each page: the videos, the settings
+        self.histories = (History(), History())
         self.paths = PathsSection(self.lock, saved)
         self.look = WatermarkLookSection(self.lock, saved)
         self.motion = MotionSection(self.lock, saved)
         self.encoding = EncodingSection(self.lock, saved, self.panel.set_status)
         self.sections = (self.paths, self.look, self.motion, self.encoding)
-        self.videos = VideosPage(on_next=self._show_settings)
+        self.videos = VideosPage(self.histories[0], on_next=self._show_settings)
         self.videos.load_settings(saved)
 
         # Settings scroll when the window is too short for them; the control panel below stays in view
@@ -141,6 +149,27 @@ class UniversalWatermark(QMainWindow):
         if self.encoding.use_gpu_var.get():
             self.encoding.check_gpu()
 
+        # Undo and redo; after the check above, so its changes aren't a step
+        untracked = {
+            # The folder of the dialogs, the encoder the QP was set for, and the shown or hidden
+            # settings in the custom motion aren't settings to undo
+            self.videos.last_folder_var, self.encoding.gpu_qp_encoder_var,
+            *(section.vars["expanded"] for section in self.motion.custom_sections),
+        }
+        for history, sections in zip(self.histories, ((self.videos,), self.sections)):
+            for section in sections:
+                for var in section.variables():
+                    if var not in untracked:
+                        history.track(var)
+        for keys, command in ((UNDO_KEYS, self._undo), (REDO_KEYS, self._redo)):
+            action = QAction(self)
+            action.setShortcuts(keys)
+            action.triggered.connect(command)
+            self.addAction(action)
+        # Text fields and number fields have their own undo of the text: let the keys reach
+        # the shortcuts instead, so there is one undo for the whole page
+        QApplication.instance().installEventFilter(self)
+
         self._fit_window()
 
     def _align_setting_labels(self):
@@ -165,6 +194,25 @@ class UniversalWatermark(QMainWindow):
         self.resize(width, height)
         # The window can be made shorter, down to a few rows of settings
         self.setMinimumSize(width, panel_height + margins + MIN_SETTINGS_HEIGHT)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.ShortcutOverride:
+            pressed = QKeySequence(event.keyCombination())
+            if any(pressed.matches(keys) == QKeySequence.SequenceMatch.ExactMatch
+                   for keys in UNDO_KEYS + REDO_KEYS):
+                # Not taken by the field: the shortcut gets the key
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _undo(self):
+        # Nothing changes while rendering
+        if not self.lock.locked:
+            self.histories[self.pages.currentIndex()].undo()
+
+    def _redo(self):
+        if not self.lock.locked:
+            self.histories[self.pages.currentIndex()].redo()
 
     def _show_settings(self):
         self.videos_count_label.setText(plural(len(self.videos.video_paths()), "video"))
@@ -227,6 +275,7 @@ class UniversalWatermark(QMainWindow):
 
     def closeEvent(self, event):
         if self.control is None:
+            QApplication.instance().removeEventFilter(self)
             self.videos.shutdown()
             event.accept()
             return

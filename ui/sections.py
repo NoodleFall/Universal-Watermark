@@ -169,6 +169,8 @@ class EncodingSection:
         # Video card encoder used for the chosen codec, or None; set by check_gpu()
         self.gpu_encoder = None
         self.gpu_qp_max = MAX_GPU_QP
+        # While check_gpu() runs, e.g. turning "Use GPU" off itself
+        self._checking_gpu = False
         # Shows "original" in the bitrate field; set from the video quality mode
         self.original_bitrate_var = Var(False)
         self.card, form = make_card("Encoding")
@@ -180,12 +182,12 @@ class EncodingSection:
         codec_menu.addItems(list(VIDEO_CODECS))
         codec_menu.setMinimumWidth(MENU_MIN_WIDTH)
         bind_combo(codec_menu, self.codec_var)
-        codec_menu.activated.connect(lambda index: self.check_gpu())
         inputs.layout().addWidget(codec_menu)
         gpu_checkbox = QCheckBox("Use GPU (faster, bigger files)")
         bind_checkbox(gpu_checkbox, self.use_gpu_var)
-        # Only a click checks the encoders, not the checkbox turned off by check_gpu() itself
-        gpu_checkbox.clicked.connect(self.check_gpu)
+        # Any change checks the encoders, also one undone
+        self.codec_var.changed.connect(self.check_gpu)
+        self.use_gpu_var.changed.connect(self.check_gpu)
         inputs.layout().addSpacing(15)
         inputs.layout().addWidget(gpu_checkbox)
         lock.add(codec_menu, gpu_checkbox)
@@ -218,6 +220,7 @@ class EncodingSection:
             self.bitrate_row, lock, self.bitrate_var, MAX_BITRATE_KBPS, f"kb/s (max: {MAX_BITRATE_KBPS})",
             self.original_bitrate_var, None, "original"
         )
+        self.video_quality_var.changed.connect(self._update_quality_fields)
         self._update_quality_fields()
 
         # Audio normalization: off, or a loudness preset of a platform or standard
@@ -250,7 +253,7 @@ class EncodingSection:
         self.video_quality_var.set(QUALITY_CRF if name == QUALITY_GPU_QP else name)
         self._update_quality_fields()
 
-    def _update_quality_fields(self):
+    def _update_quality_fields(self, *args):
         # Show the CRF field for constant quality (the QP field when a video card encodes),
         # otherwise the bitrate field, which shows "original" in the "Same bitrate as original" mode
         mode = self.video_quality_var.get()
@@ -267,9 +270,19 @@ class EncodingSection:
         self.quality_value_label.setText(label)
         self.quality_fields.setCurrentWidget(shown)
 
-    def check_gpu(self):
+    def check_gpu(self, *args):
         # Show which encoder the chosen codec will use; when "Use GPU" is on,
-        # make sure a video card encoder actually works. The checks are cached
+        # make sure a video card encoder actually works. The checks are cached.
+        # Not again for "Use GPU" turned off by the check itself
+        if self._checking_gpu:
+            return
+        self._checking_gpu = True
+        try:
+            self._check_gpu()
+        finally:
+            self._checking_gpu = False
+
+    def _check_gpu(self):
         codec = self.codec_var.get()
         # Show the message before the checks, which can take a few seconds
         self.set_status("Checking the encoders…")

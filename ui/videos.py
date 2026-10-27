@@ -1,9 +1,10 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QFileInfo, QObject, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QPalette, QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -26,9 +27,9 @@ from constants import (
     PREVIEW_WORKERS,
     VIDEO_EXTENSIONS,
 )
-from functions.video_files import find_videos, is_video_file, sort_videos
+from functions.video_files import find_videos, is_video_file
 from functions.video_info import get_video_info, get_video_thumbnail
-from ui.fields import make_title, set_secondary
+from ui.fields import bind_combo, make_title, set_secondary
 from ui.var import Var
 
 # Space between the tiles and inside each tile
@@ -39,12 +40,43 @@ GRID_MARGIN = 8
 # Previews are read at twice the size of their box, so they stay sharp on high-DPI screens
 PREVIEW_SCALE = 2
 
+SORT_NAME = "Name"
+SORT_CREATED = "Date created"
+SORT_MODIFIED = "Date modified"
+SORT_ADDED = "Date added"
+SORT_DURATION = "Duration"
+SORT_SIZE = "File size"
+SORT_RESOLUTION = "Resolution"
+# Sort orders of the videos: {name: key of a tile}; None for a tile whose
+# duration or resolution isn't read yet, or can't be read
+VIDEO_SORTS = {
+    SORT_NAME: lambda tile: tile.name_key,
+    SORT_CREATED: lambda tile: tile.created,
+    SORT_MODIFIED: lambda tile: tile.modified,
+    SORT_ADDED: lambda tile: tile.number,
+    SORT_DURATION: lambda tile: tile.duration,
+    SORT_SIZE: lambda tile: tile.size,
+    SORT_RESOLUTION: lambda tile: tile.pixels,
+}
+
 
 def format_duration(seconds):
     # 83 -> "1:23", 3725 -> "1:02:05"
     seconds = round(seconds)
     hours, minutes, seconds = seconds // 3600, seconds // 60 % 60, seconds % 60
     return f"{hours}:{minutes:02}:{seconds:02}" if hours else f"{minutes}:{seconds:02}"
+
+
+def format_size(size):
+    # 532 -> "532 B", 45210000 -> "45.2 MB"
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{size} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+
+
+def format_date(date_time):
+    return date_time.toString("dd.MM.yyyy")
 
 
 def video_key(path):
@@ -96,15 +128,34 @@ class PreviewLoader(QObject):
 
 class VideoTile(QFrame):
     """
-    Tile of a video: its preview with a button that removes the video, its name
-    and its length and size once they are read.
+    Tile of a video: its preview with a button that removes the video, its name, its length
+    and resolution once they are read, and its file size and date. Keeps what the videos are
+    sorted by; number is the order of adding.
     """
 
-    def __init__(self, path, on_remove):
+    def __init__(self, path, number, on_remove):
         super().__init__()
         self.path = path
+        self.number = number
+        self.on_remove = on_remove
         # Error message if the video can't be read, None otherwise
         self.error = None
+        name = os.path.basename(path)
+        # Videos with the same name from different folders by their folder
+        self.name_key = (name.lower(), path.lower())
+        file_info = QFileInfo(path)
+        self.size = file_info.size()
+        modified = file_info.lastModified()
+        # The creation date isn't known on every system or file system
+        created = file_info.birthTime()
+        if not created.isValid():
+            created = modified
+        self.dates = {SORT_CREATED: created, SORT_MODIFIED: modified}
+        self.created = created.toMSecsSinceEpoch()
+        self.modified = modified.toMSecsSinceEpoch()
+        # Read with the preview
+        self.duration = None
+        self.pixels = None
         self.setObjectName("tile")
         self.setFixedWidth(PREVIEW_WIDTH + 2 * TILE_PADDING)
         layout = QVBoxLayout(self)
@@ -124,17 +175,31 @@ class VideoTile(QFrame):
         remove.setText("✕")
         remove.setToolTip("Remove from the list")
         remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove.clicked.connect(lambda: on_remove(self))
+        remove.clicked.connect(self._remove_clicked)
         remove.adjustSize()
         remove.move(PREVIEW_WIDTH - remove.width() - 4, 4)
 
-        name = os.path.basename(path)
         name_label = QLabel(QFontMetrics(self.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, PREVIEW_WIDTH))
         name_label.setToolTip(path)
         layout.addWidget(name_label)
         self.info_label = QLabel(" ")
         set_secondary(self.info_label)
         layout.addWidget(self.info_label)
+        self.file_label = QLabel()
+        self.file_label.setToolTip(
+            f"Created: {created.toString('dd.MM.yyyy hh:mm')}\nModified: {modified.toString('dd.MM.yyyy hh:mm')}"
+        )
+        set_secondary(self.file_label)
+        layout.addWidget(self.file_label)
+        self.show_date(SORT_CREATED)
+
+    def _remove_clicked(self):
+        self.on_remove(self)
+
+    def show_date(self, sort):
+        # The modification date while sorting by it, otherwise the creation date
+        date = self.dates.get(sort, self.dates[SORT_CREATED])
+        self.file_label.setText(f"{format_size(self.size)} · {format_date(date)}")
 
     def set_preview(self, info, png):
         pixmap = QPixmap()
@@ -146,6 +211,9 @@ class VideoTile(QFrame):
         )
         pixmap.setDevicePixelRatio(ratio)
         self.preview.setPixmap(pixmap)
+        if info["duration"]:
+            self.duration = info["duration"]
+        self.pixels = info["width"] * info["height"]
         self.info_label.setText(f"{format_duration(info['duration'] or 0)} · {info['width']}×{info['height']}")
 
     def set_error(self, error):
@@ -161,20 +229,29 @@ class VideoTile(QFrame):
 
 class VideosPage(QWidget):
     """
-    First page of the window: the videos to watermark, as tiles with their previews, always
-    sorted by name. Videos are added with the buttons, or by dropping files and folders
-    on the page; a folder adds the videos right in it. on_next opens the settings.
+    First page of the window: the videos to watermark, as tiles with their previews, in the
+    chosen sort order, which is also the order of rendering. Videos are added with the buttons,
+    or by dropping files and folders on the page; a folder adds the videos right in it.
+    Adding and removing go to history, so they can be undone. on_next opens the settings.
     """
 
-    def __init__(self, on_next):
+    def __init__(self, history, on_next):
         super().__init__()
+        self.history = history
         self.on_next = on_next
         self.setAcceptDrops(True)
-        # {video_key(path): tile}
+        # {video_key(path): tile} of the videos in the list
         self.tiles = {}
+        # {video_key(path): [tiles]} of the videos being read, also the removed ones,
+        # which undoing may bring back
+        self.loading = {}
+        # Number of the next added video, for sorting by the order of adding
+        self.next_number = 0
         self.columns = 0
         # Folder the "Add" dialogs open in: the one videos were last added from
         self.last_folder_var = Var("")
+        self.sort_var = Var(SORT_NAME)
+        self.descending_var = Var(False)
         self.loader = PreviewLoader()
         self.loader.loaded.connect(self._on_loaded)
 
@@ -190,6 +267,20 @@ class VideosPage(QWidget):
         header.addSpacing(6)
         header.addWidget(self.count_label, 0, Qt.AlignmentFlag.AlignBottom)
         header.addStretch()
+        header.addWidget(QLabel("Sort:"))
+        sort_menu = QComboBox()
+        sort_menu.addItems(list(VIDEO_SORTS))
+        bind_combo(sort_menu, self.sort_var)
+        header.addWidget(sort_menu)
+        self.direction_button = QToolButton()
+        # A square next to the menu, as tall as it
+        side = sort_menu.sizeHint().height()
+        self.direction_button.setFixedSize(side, side)
+        self.direction_button.clicked.connect(lambda: self.descending_var.set(not self.descending_var.get()))
+        header.addWidget(self.direction_button)
+        self.sort_var.changed.connect(self._on_sort_changed)
+        self.descending_var.changed.connect(self._on_sort_changed)
+        header.addSpacing(10)
         # One button adds both: a file dialog can't pick files and folders at once, so it asks which
         add_button = QPushButton("Add video")
         add_menu = QMenu(add_button)
@@ -255,15 +346,40 @@ class VideosPage(QWidget):
         footer.addWidget(self.next_button)
         layout.addLayout(footer)
 
+        self._update_direction()
         self._update()
 
     def video_paths(self):
-        return sort_videos(tile.path for tile in self.tiles.values())
+        # In the order shown
+        return [tile.path for tile in self._sorted_tiles()]
+
+    def _sorted_tiles(self):
+        # Equal ones by name; the videos whose duration or resolution isn't known yet at the end
+        key = VIDEO_SORTS[self.sort_var.get()]
+        tiles = sorted(self.tiles.values(), key=lambda tile: tile.name_key)
+        known = [tile for tile in tiles if key(tile) is not None]
+        unknown = [tile for tile in tiles if key(tile) is None]
+        # A stable sort: reversing keeps the equal ones by name
+        known.sort(key=key, reverse=self.descending_var.get())
+        return known + unknown
+
+    def _on_sort_changed(self, *args):
+        self._update_direction()
+        sort = self.sort_var.get()
+        for tile in self.tiles.values():
+            tile.show_date(sort)
+        self._layout_tiles(force=True)
+
+    def _update_direction(self):
+        descending = self.descending_var.get()
+        self.direction_button.setText("↓" if descending else "↑")
+        self.direction_button.setToolTip("Descending" if descending else "Ascending")
 
     def add_paths(self, paths):
         # Add the videos among paths and the videos right in the folders among them;
         # tell what was skipped
-        added = duplicates = not_videos = 0
+        added = []
+        duplicates = not_videos = 0
         empty_folders = []
         for path in paths:
             if os.path.isdir(path):
@@ -280,13 +396,20 @@ class VideosPage(QWidget):
                 if key in self.tiles:
                     duplicates += 1
                     continue
-                self.tiles[key] = VideoTile(os.path.abspath(video), self._remove)
-                self.loader.load(video)
-                added += 1
+                tile = VideoTile(os.path.abspath(video), self.next_number, self._remove)
+                tile.show_date(self.sort_var.get())
+                self.next_number += 1
+                self.tiles[key] = tile
+                added.append(tile)
+                if key not in self.loading:
+                    self.loader.load(video)
+                self.loading.setdefault(key, []).append(tile)
 
+        if added:
+            self.history.push(lambda: self._take(added), lambda: self._put(added))
         messages = []
         if added:
-            messages.append(f"Added {plural(added, 'video')}")
+            messages.append(f"Added {plural(len(added), 'video')}")
         if duplicates:
             messages.append(f"{plural(duplicates, 'video')} already in the list")
         if not_videos:
@@ -298,29 +421,43 @@ class VideosPage(QWidget):
         self._update()
 
     def clear(self):
-        for tile in self.tiles.values():
-            tile.deleteLater()
-        self.tiles.clear()
-        self.message_label.clear()
-        self._update()
+        tiles = list(self.tiles.values())
+        self._take(tiles)
+        self.history.push(lambda: self._put(tiles), lambda: self._take(tiles))
 
     def shutdown(self):
         self.loader.shutdown()
 
     def _remove(self, tile):
-        del self.tiles[video_key(tile.path)]
-        tile.deleteLater()
+        self._take([tile])
+        self.history.push(lambda: self._put([tile]), lambda: self._take([tile]))
+
+    def _take(self, tiles):
+        # Take the tiles out of the list, keeping them for undoing; without a parent,
+        # the ones history no longer keeps are deleted
+        for tile in tiles:
+            del self.tiles[video_key(tile.path)]
+            tile.setParent(None)
+        self.message_label.clear()
+        self._update()
+
+    def _put(self, tiles):
+        # Bring back tiles taken out, as they were
+        for tile in tiles:
+            self.tiles[video_key(tile.path)] = tile
+            tile.show_date(self.sort_var.get())
+        self.message_label.clear()
         self._update()
 
     def _on_loaded(self, path, info, png, error):
-        # The video may have been removed while it was read
-        tile = self.tiles.get(video_key(path))
-        if tile is None:
-            return
-        if error is None:
-            tile.set_preview(info, png)
-        else:
-            tile.set_error(error)
+        # Also the tiles removed while the video was read: undoing may bring them back
+        for tile in self.loading.pop(video_key(path), []):
+            if error is None:
+                tile.set_preview(info, png)
+            else:
+                tile.set_error(error)
+        if self.sort_var.get() in (SORT_DURATION, SORT_RESOLUTION):
+            self._layout_tiles(force=True)
 
     def _browse_videos(self):
         patterns = " ".join(f"*{extension} *{extension.upper()}" for extension in VIDEO_EXTENSIONS)
@@ -347,7 +484,7 @@ class VideosPage(QWidget):
         self.on_next()
 
     def _update(self):
-        # Show the tiles in the order of their names, the count and whether there is anything to do
+        # Show the tiles in the sort order, the count and whether there is anything to do
         count = len(self.tiles)
         self.count_label.setText(plural(count, "video") if count else "")
         self.content.setCurrentIndex(1 if count else 0)
@@ -367,9 +504,10 @@ class VideosPage(QWidget):
         self.columns = columns
         while self.grid.count():
             self.grid.takeAt(0)
-        by_path = {tile.path: tile for tile in self.tiles.values()}
-        for i, path in enumerate(self.video_paths()):
-            self.grid.addWidget(by_path[path], i // columns, i % columns)
+        for i, tile in enumerate(self._sorted_tiles()):
+            self.grid.addWidget(tile, i // columns, i % columns)
+            # Tiles taken out and brought back are hidden until shown again
+            tile.show()
 
     def eventFilter(self, watched, event):
         if watched is self.scroll.viewport() and event.type() == QEvent.Type.Resize:
@@ -396,12 +534,19 @@ class VideosPage(QWidget):
             self.add_paths(paths)
 
     def variables(self):
-        return [self.last_folder_var]
+        return [self.last_folder_var, self.sort_var, self.descending_var]
 
     def settings(self):
-        # Saved under the name of the folder setting from before videos were added one by one
-        return {"raw_videos_path": self.last_folder_var.get()}
+        # The folder is saved under the name of the folder setting from before videos were added one by one
+        return {
+            "raw_videos_path": self.last_folder_var.get(),
+            "video_sort": self.sort_var.get(),
+            "video_sort_descending": self.descending_var.get(),
+        }
 
     def load_settings(self, saved):
         folder = saved.get("raw_videos_path", "")
         self.last_folder_var.set(folder if isinstance(folder, str) and os.path.isdir(folder) else "")
+        sort = saved.get("video_sort")
+        self.sort_var.set(sort if sort in VIDEO_SORTS else SORT_NAME)
+        self.descending_var.set(bool(saved.get("video_sort_descending", False)))

@@ -22,7 +22,7 @@ from constants import (
     RECOMMENDED_CRF,
 )
 from functions.batch import process_videos
-from functions.video_files import find_videos, is_video_file
+from functions.video_files import find_videos, is_video_file, sort_videos
 from ui.number_input import InvalidInput, parse_field
 
 # Names of the motions and codecs on the command line
@@ -135,7 +135,7 @@ def build_parser():
 
 
 def collect_videos(parser, inputs):
-    # Videos among the inputs and right in the folders among them, each once
+    # Videos among the inputs and right in the folders among them, each once, by name
     videos = {}
     for path in inputs:
         if os.path.isdir(path):
@@ -152,7 +152,7 @@ def collect_videos(parser, inputs):
             videos.setdefault(os.path.normcase(os.path.realpath(video)), video)
     if not videos:
         parser.error("no videos to watermark")
-    return list(videos.values())
+    return sort_videos(videos.values())
 
 
 def get_motions(args):

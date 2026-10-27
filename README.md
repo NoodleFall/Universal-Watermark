@@ -13,6 +13,12 @@ uv run main.py
 
 Without arguments, `main.py` opens the window. With arguments, it works in the console (see below).
 
+## Window
+
+Add videos with "Add video" or by dropping files and folders on the window. They are processed
+in the order shown, which can be sorted by name, dates, duration, file size or resolution.
+Ctrl+Z undoes changes of the settings and of the list of videos; Ctrl+Shift+Z or Ctrl+Y redoes them.
+
 ## Console
 
 ```
